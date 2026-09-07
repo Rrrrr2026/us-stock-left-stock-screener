@@ -1,6 +1,19 @@
 /* leftside_shared.js — 两个筛选器共用的看板功能 (信号回测 / 错杀候选 / 优质公司 / 排序 / 交易日志)
    由 stock-core 维护, 各仓库发布时复制到 dashboard/ 与 docs/。页面在主脚本末尾调用
-   LS.init({$, t, isNum, escH, tagClass, tagText, dash, getData, openDetail, getCur, market})。 */
+   LS.init({$, t, isNum, escH, tagClass, tagText, dash, getData, openDetail, getCur, market})。
+
+   ★★ 颜色铁律 (老板 2026-09-07 拍板 B 案 + GM 09-07 验收裁决 —— 动本文件的颜色前先读完) ★★
+   1. **带方向的数字一律红涨绿跌**: 正数 class="pos"(红) / 负数 class="neg"(绿) / 零与无值不着色。
+      适用: 模拟盘与日志盈亏、双周组合收益、回测平均收益、板块涨跌幅。
+      ⚠ 禁止再写 text-emerald-300 表示"赚"、text-rose-300 表示"亏" —— 那是绿涨红跌, 与老板既定
+      规则相反, 2026-09-07 验收就是被这条打回来的。
+   2. **状态判定一律做成实心药丸**: 达标/未过/通过/停发 用 .dpill(.ok 绿 / .mid 琥珀 / .no 红 /
+      .mute 灰), 取 --ok/--bad 令牌。禁止把达标率写成裸色数字。
+   3. **形状是唯一的消歧手段**: 药丸=状态, 裸数字=涨跌。所以状态色 (--ok #3ddc97 / --bad #ff5c5c)
+      与涨跌色 (.pos #f87171 / .neg #4ade80) 还刻意取了不同色值, 两道保险。
+   4. 收益数字**永远不许放进绿色药丸里** (旧写法 badge tag-strong 里塞 +12.3% 已废):
+      药丸只装状态词/图标, 数字裸放在药丸外面。
+   同一套规则的 CSS 侧真值见 stock-core/dashboard/fv-shell.css 顶部注释。 */
 window.LS = window.LS || {};
 LS.init = function(ctx){
   const {$, t, isNum, escH, tagClass, tagText, dash, getData, openDetail, getCur, market} = ctx;
@@ -8,6 +21,11 @@ LS.init = function(ctx){
   const getLive = ctx.getLive || getData;
   // 登录闸: 主站(fairvalpha.com)未登录时, 个人功能(日志/模拟盘)先弹登录; 镜像站不拦
   const gate = () => !window.fvGate || window.fvGate();
+  // 颜色铁律 (见文件头) 的两个唯一出口 —— 新代码只准用这两个, 不要再手写颜色 class:
+  //   pill(文字, ok|mid|no|mute)  → 状态药丸 (实心, 用 --ok/--bad 令牌)
+  //   sgn(数值)                   → 涨跌/收益的裸色 class ("pos" 红涨 / "neg" 绿跌 / "" 零与无值)
+  const pill = (txt, cls, size) => `<span class="dpill ${cls || "mute"} ${size || "inl"}">${txt}</span>`;
+  const sgn  = (v) => !isNum(v) ? "" : (v > 0 ? "pos" : (v < 0 ? "neg" : ""));
   // ---------- 📊 信号回测 ----------
   function btOpen(code){
     mergeQLProfiles();
@@ -69,9 +87,11 @@ LS.init = function(ctx){
       (SEG && !SEG.n_resolved ? `<div class="col-span-full text-xs" style="color:var(--muted)">⏳ ${t("bt_seg_pending_a")}${SEG.n_open||0}${t("bt_seg_pending_b")}</div>`:"") +
       stat(t("bt_n"), P.n_resolved, `${t("bt_n_open")} ${P.n_open||0}`, null, "n") +
       stat(t("bt_fill"), pct(fillR), null, null, "fill") +
-      stat(t("bt_win"), pct(P.win10), t("bt_win_sub") + (isNum(P.win_tR)?` · ${t("bt_tr")} ${pct(P.win_tR)}`:""), P.win10>=0.6?"fv-ok":"text-amber-300", "win") +
+      // 达标率是"状态"→ 药丸 (铁律 2); 平均收益是"带方向的数字"→ 裸色 pos/neg (铁律 1)
+      stat(t("bt_win"), isNum(P.win10)? pill(pct(P.win10), P.win10>=0.6?"ok":"mid", "lg") : dash,
+           t("bt_win_sub") + (isNum(P.win_tR)?` · ${t("bt_tr")} ${pct(P.win_tR)}`:""), null, "win") +
       stat(t("bt_reach5"), pct(P.reach5), t("bt_reach5_sub"), isNum(P.reach5)&&isNum(P.win10)&&(P.reach5-P.win10)>=0.2?"text-amber-300":null, "reach5") +
-      stat(t("bt_ret"), (P.avg_ret>0?"+":"")+pct(P.avg_ret,1), t("bt_ret_sub") + (isNum(P.avg_ret_tR)?` · ${t("bt_tr")} ${(P.avg_ret_tR>0?"+":"")+pct(P.avg_ret_tR,1)}`:""), P.avg_ret>0?"text-emerald-300":"text-rose-300", "ret") +
+      stat(t("bt_ret"), (P.avg_ret>0?"+":"")+pct(P.avg_ret,1), t("bt_ret_sub") + (isNum(P.avg_ret_tR)?` · ${t("bt_tr")} ${(P.avg_ret_tR>0?"+":"")+pct(P.avg_ret_tR,1)}`:""), sgn(P.avg_ret), "ret") +
       stat(t("bt_days_med"), isNum(P.med_days)?P.med_days:dash, t("bt_days_sub"), null, "days");
     card.querySelectorAll(".btInfo").forEach(ic=>{ ic.onclick=(e)=>{ e.stopPropagation();
       let pop = document.getElementById("btHelpPop");
@@ -85,9 +105,9 @@ LS.init = function(ctx){
     const th=`<tr class="text-slate-400 text-[11px]"><th class="text-left py-1">${t("bt_col_tag")}</th><th class="text-right">${t("bt_col_n")}</th><th class="text-right">${t("bt_col_win")}</th><th class="text-right">${t("bt_col_r5")}</th><th class="text-right">${t("bt_col_mfe")}</th><th class="text-right">${t("bt_col_ret")}</th><th class="text-right">${t("bt_col_d")}</th></tr>`;
     $("#btTagTbl").innerHTML = th + rows.map(([k,s])=>{
       const low=(s.n_resolved||0)<12;
-      const wc=!isNum(s.win10)?"":(s.win10>=(B.agg.p0||0)?"fv-ok":"fv-bad");
-      const rc=!isNum(s.avg_ret)?"":(s.avg_ret>0?"text-emerald-300":"text-rose-300");
-      return `<tr class="border-t border-slate-700/40 ${low?"opacity-60":""}"><td class="py-1"><span class="badge ${tagClass(k)}">${escH(tagText(k))}</span>${low?` <span class="text-[10px] text-slate-500">${t("bt_low_n")}</span>`:""}</td><td class="text-right">${s.n_resolved||0}</td><td class="text-right ${wc}">${pct(s.win10)}</td><td class="text-right">${pct(s.reach5)}</td><td class="text-right text-slate-400">${isNum(s.mfe_q50)?pct(s.mfe_q50,1):dash}<span class="text-[10px]">/${isNum(s.mfe_q75)?pct(s.mfe_q75,1):dash}</span></td><td class="text-right ${rc}">${isNum(s.avg_ret)?((s.avg_ret>0?"+":"")+pct(s.avg_ret,1)):dash}</td><td class="text-right">${isNum(s.med_days)?s.med_days:dash}</td></tr>`;
+      // 达标率 = 是否跑赢基准 p0, 是状态 → 药丸; 平均收益 = 数字 → 裸色 pos/neg
+      const wcell=!isNum(s.win10)? dash : pill(pct(s.win10), s.win10>=(B.agg.p0||0)?"ok":"no");
+      return `<tr class="border-t border-slate-700/40 ${low?"opacity-60":""}"><td class="py-1"><span class="badge ${tagClass(k)}">${escH(tagText(k))}</span>${low?` <span class="text-[10px] text-slate-500">${t("bt_low_n")}</span>`:""}</td><td class="text-right">${s.n_resolved||0}</td><td class="text-right">${wcell}</td><td class="text-right">${pct(s.reach5)}</td><td class="text-right text-slate-400">${isNum(s.mfe_q50)?pct(s.mfe_q50,1):dash}<span class="text-[10px]">/${isNum(s.mfe_q75)?pct(s.mfe_q75,1):dash}</span></td><td class="text-right ${sgn(s.avg_ret)}">${isNum(s.avg_ret)?((s.avg_ret>0?"+":"")+pct(s.avg_ret,1)):dash}</td><td class="text-right">${isNum(s.med_days)?s.med_days:dash}</td></tr>`;
     }).join("");
     const dim=(lab,s)=> (s&&s.n_resolved)?`<span class="badge tag-watch" title="n=${s.n_resolved}">${lab} ${pct(s.win10)} <span class="text-[10px] opacity-70">n${s.n_resolved}</span></span>`:"";
     const O=B.agg.by_opp||{}, G=B.agg.by_growth||{}, CS=B.agg.by_cuosha||{};
@@ -103,14 +123,15 @@ LS.init = function(ctx){
     $("#btRecos").innerHTML = rec.length? Object.values(groups).map(g=>{
       const r=g.r;
       const lab=(r.seg_kind==="combo")? `${escH(tagText(r.tag))} × ${t("bt_g_"+r.growth)}` : escH(tagText(r.tag));
-      return `<div class="w-full"><div class="text-xs text-slate-300 mb-1">${t("bt_reco_seg")} <span class="badge ${tagClass(r.tag)}">${lab}</span> ${t("bt_reco_hist")} <b class="fv-ok">${pct(r.seg_win_post)}</b> <span class="text-slate-500">(n=${r.seg_n} · ${t("bt_reco_vs")} ${pct(B.agg.p0)})</span></div><div class="flex flex-wrap gap-2">`+
+      return `<div class="w-full"><div class="text-xs text-slate-300 mb-1">${t("bt_reco_seg")} <span class="badge ${tagClass(r.tag)}">${lab}</span> ${t("bt_reco_hist")} ${pill(pct(r.seg_win_post), "ok")} <span class="text-slate-500">(n=${r.seg_n} · ${t("bt_reco_vs")} ${pct(B.agg.p0)})</span></div><div class="flex flex-wrap gap-2">`+
         g.items.map(x=>`<span class="badge tag-strong cursor-pointer" onclick="btOpen('${escH(x.code)}')" title="${t("bt_reco_tip2")}">${escH(x.code)} ${escH(String(x.name||"").slice(0,10))} <span class="text-[10px] opacity-70">${t("composite")} ${isNum(x.fs)?x.fs.toFixed(1):dash}</span></span>`).join("")+`</div></div>`;
     }).join("") : `<span class="text-xs text-slate-500">${t("bt_reco_none")}</span>`;
     const rc2=(B.recent||[]).filter(e=>inSeg(e.tag)).slice(0,10);
     $("#btRecent").innerHTML = rc2.length? `<div class="text-xs text-slate-400 mb-1">${t("bt_recent")}</div><div class="flex flex-wrap gap-2">`+rc2.map(e=>{
       const ic=e.status==="won"?"✅":(e.status==="stopped"?"⛔":"⏳");
       const rr=isNum(e.ret)?((e.ret>0?"+":"")+(e.ret*100).toFixed(1)+"%"):dash;
-      return `<span class="badge ${(e.ret>0)?"tag-strong":"tag-warn"}" title="${e.sig_date||""} → ${e.exit_date||""}">${ic} ${escH(e.code)} ${rr}</span>`;
+      // 铁律 4: 收益数字不许进绿药丸。药丸退为中性容器, 状态由 ✅/⛔/⏳ 表达, 收益裸色 pos/neg
+      return `<span class="badge tag-watch" title="${e.sig_date||""} → ${e.exit_date||""}">${ic} ${escH(e.code)} <b class="${sgn(e.ret)}">${rr}</b></span>`;
     }).join("")+`</div>` : "";
     $("#btNote").textContent = t("bt_note");
   }
@@ -141,7 +162,8 @@ LS.init = function(ctx){
     const mark = i<0? "" : ` <span class="text-sky-300">${arr[i].dir==="desc"?"▼":"▲"}${arr.length>1?(i+1):""}</span>`;
     return `<th class="${align||"text-left"} py-1 cursor-pointer select-none hover:text-sky-300" title="${t("sort_hint")}" onclick="sortClick('${which}','${k}',event)">${label}${mark}</th>`;
   }
-  const p20cell=(v,n,tip)=> isNum(v)? `<span class="${v>=50?"fv-ok":(v>=30?"text-amber-300":"text-slate-300")}" title="${tip} · n=${n||dash}">${v.toFixed(0)}%</span>` : dash;
+  // 20日达标率 = 状态 → 药丸 (≥50 达标 / ≥30 观望 / 其余中性灰, 不判"未过")
+  const p20cell=(v,n,tip)=> isNum(v)? `<span class="dpill ${v>=50?"ok":(v>=30?"mid":"mute")} inl" title="${tip} · n=${n||dash}">${v.toFixed(0)}%</span>` : dash;
   // ---------- 💎 错杀候选 ----------
   const csGet=(c,k)=>({score:c.cuosha_score, dd:c.cuosha_dd, expl:c.cuosha_expl, g:c._g, up:c.cuosha_upside, p20:c.cuosha_p20, name:c.code, ind:c.industry, tag:c.tag})[k];
   function renderCuosha(){
@@ -160,10 +182,10 @@ LS.init = function(ctx){
         `<td>${(isNum(c.earn_days)&&c.earn_days<=7)?`<span title="${t("earn_tip")} · ${escH(c.earn_date||"")}">📅</span> `:""}${(c.news_flags&&c.news_flags.length)?`<span class="text-rose-300" title="${t("news_flag_tip")}: ${escH(c.news_flags.join(" / "))}">🚩</span> `:""}<b>${escH(String(c.name||"").slice(0,26))}</b> <span class="font-mono text-xs text-slate-400">${escH(c.code)}</span></td>`+
         `<td class="text-slate-400 text-xs">${escH(c.industry||dash)}</td>`+
         `<td class="text-right font-bold text-amber-300" title="${escH(c.cuosha_note||"")}">${c.cuosha_score}</td>`+
-        `<td class="text-right text-rose-300">${isNum(c.cuosha_dd)?c.cuosha_dd.toFixed(0)+"%":dash}</td>`+
+        `<td class="text-right neg">${isNum(c.cuosha_dd)?c.cuosha_dd.toFixed(0)+"%":dash}</td>`+   /* 回撤=跌 → 绿 (铁律 1) */
         `<td class="text-right text-sky-300">${isNum(c.cuosha_expl)?c.cuosha_expl+"%":dash}</td>`+
-        `<td class="text-right ${g>0?"text-emerald-300":"text-slate-400"}">${isNum(g)?(g>0?"+":"")+g.toFixed(0)+"%":dash}</td>`+
-        `<td class="text-right ${c.cuosha_upside>0?"text-emerald-300 font-semibold":"text-slate-500"}">${(c.cuosha_upside>0)?"+"+c.cuosha_upside+"%":dash}</td>`+
+        `<td class="text-right ${sgn(g)||"text-slate-400"}">${isNum(g)?(g>0?"+":"")+g.toFixed(0)+"%":dash}</td>`+
+        `<td class="text-right ${c.cuosha_upside>0?"pos font-semibold":"text-slate-500"}">${(c.cuosha_upside>0)?"+"+c.cuosha_upside+"%":dash}</td>`+
         `<td class="text-right">${p20cell(c.cuosha_p20, c.cuosha_p20_n, t("p20_tip_cs"))}</td>`+
         `<td class="pl-3"><span class="badge ${tagClass(c.tag)}">${escH(tagText(c.tag))}</span></td></tr>`;
     }).join("");
@@ -202,11 +224,12 @@ LS.init = function(ctx){
         `<td class="py-1.5 text-slate-500">${i+1}</td>`+
         `<td>${crown}<b>${escH(String(p.name||"").slice(0,26))}</b> <span class="font-mono text-xs text-slate-400">${escH(p.code)}</span>${p.accel?` <span title="${t("ql_accel")}">⚡</span>`:""}</td>`+
         `<td class="text-slate-400 text-xs">${escH(p.industry||dash)}</td>`+
-        `<td class="text-right font-bold text-emerald-300">${p.score??dash}</td>`+
+        `<td class="text-right font-bold">${p.score??dash}</td>`+   /* 评分不是涨跌也不是状态 → 中性加粗 */
         `<td class="pl-3">${gates}</td>`+
-        `<td class="text-right ${isNum(p.upside)&&p.upside>=20?"text-emerald-300 font-semibold":"text-slate-400"}">${isNum(p.upside)?(p.upside>0?"+":"")+p.upside.toFixed(0)+"%":dash}${p.val_model?` <span class="text-[9px] text-slate-500">${escH(p.val_model)}</span>`:""}</td>`+
-        `<td class="text-right ${isNum(p.pe)&&p.pe<31?"text-emerald-300":"text-slate-400"}">${isNum(p.pe)?p.pe:dash}</td>`+
-        `<td class="text-right ${isNum(p.roe)&&p.roe>=15?"text-emerald-300":"text-slate-400"}">${isNum(p.roe)?p.roe:dash}</td>`+
+        `<td class="text-right ${isNum(p.upside)&&p.upside>=20?"pos font-semibold":"text-slate-400"}">${isNum(p.upside)?(p.upside>0?"+":"")+p.upside.toFixed(0)+"%":dash}${p.val_model?` <span class="text-[9px] text-slate-500">${escH(p.val_model)}</span>`:""}</td>`+
+        /* PE/ROE 是"阈值达标"不是涨跌: 达标只加粗 (中性色), 不着绿 —— 否则又和绿=跌撞车 */
+        `<td class="text-right ${isNum(p.pe)&&p.pe<31?"font-semibold":"text-slate-400"}">${isNum(p.pe)?p.pe:dash}</td>`+
+        `<td class="text-right ${isNum(p.roe)&&p.roe>=15?"font-semibold":"text-slate-400"}">${isNum(p.roe)?p.roe:dash}</td>`+
         `<td class="text-right text-xs">${q4||dash}</td>`+
         `<td class="text-right text-xs">${y4||dash}</td>`+
         `<td class="pl-2 text-xs">${domt}</td>`+
@@ -219,7 +242,7 @@ LS.init = function(ctx){
     const P=(window.__BT__&&window.__BT__.picks_bt)? window.__BT__.picks_bt[which] : null;
     if(!P||!P.n) return "";
     const pc=(v,d)=>isNum(v)?((v>0?"+":"")+v.toFixed(d==null?1:d)+"%"):dash;
-    const col=v=>!isNum(v)?"text-slate-400":(v>0?"text-emerald-300":"text-rose-300");
+    const col=v=>!isNum(v)?"text-slate-400":sgn(v);            // 收益: 红涨绿跌 (铁律 1)
     const seg=(lab,v,n)=>`<span class="mr-3">${lab}<b class="${col(v)}">${pc(v)}</b>${n?` <span class="text-slate-500">n${n}</span>`:""}</span>`;
     const done = P.n30>0;
     return `<div class="mt-2 text-[12px] text-slate-300 border-t border-slate-700/40 pt-2"><span class="text-slate-400">${t("pick_bt_h")}</span> <b>${P.n}</b>${t("pick_bt_n")} · `+
@@ -271,7 +294,7 @@ LS.init = function(ctx){
     const arr=jnLoad(); const open=arr.filter(x=>x.status==="open"), closed=arr.filter(x=>x.status==="closed");
     $("#jnMeta").textContent = `${t("jn_meta_a")}${open.length}${t("jn_meta_b")}${closed.length}${t("jn_meta_c")}`;
     const pc=(v,d)=>isNum(v)?((v>0?"+":"")+v.toFixed(d==null?1:d)+"%"):dash;
-    const col=v=>!isNum(v)?"":(v>0?"text-emerald-300":"text-rose-300");
+    const col=sgn;                                             // 盈亏: 红涨绿跌 (铁律 1)
     // 统计 (已平仓)
     const rets=closed.map(r=>isNum(r.entry)&&isNum(r.exit)&&r.entry>0? (r.exit/r.entry-1)*100 : null).filter(isNum);
     const wins=rets.filter(v=>v>0), losses=rets.filter(v=>v<=0);
@@ -283,7 +306,7 @@ LS.init = function(ctx){
     $("#jnStats").innerHTML = closed.length? [
       chip(t("jn_s_win"), rets.length? (wins.length/rets.length*100).toFixed(0)+"%":dash, "text-sky-300"),
       chip(t("jn_s_avg"), pc(avg(rets)), col(avg(rets))),
-      chip(t("jn_s_avgw"), pc(avg(wins)), "text-emerald-300"), chip(t("jn_s_avgl"), pc(avg(losses)), "text-rose-300"),
+      chip(t("jn_s_avgw"), pc(avg(wins)), "pos"), chip(t("jn_s_avgl"), pc(avg(losses)), "neg"),
       chip(t("jn_s_hold"), holds.length? Math.round(avg(holds))+t("jn_days"):dash),
       chip(t("jn_s_stop"), stopsTotal? (stopsHonored/stopsTotal*100).toFixed(0)+"%":dash, "text-amber-300")
     ].join("") : `<span class="text-xs text-slate-500">${t("jn_empty_stats")}</span>`;
@@ -292,13 +315,15 @@ LS.init = function(ctx){
     $("#jnOpen").innerHTML = open.length? th1+open.map(r=>{
       const live=jnPrice(r.code); const pnl=(isNum(live)&&isNum(r.entry)&&r.entry>0)? (live/r.entry-1)*100 : null;
       const nearStop=(isNum(live)&&isNum(r.stop)&&live<=r.stop); const hitTgt=(isNum(live)&&isNum(r.target)&&live>=r.target);
-      return `<tr class="border-t border-slate-700/40 ${nearStop?"bg-rose-500/10":(hitTgt?"bg-emerald-500/10":"")}">`+
+      // 破止损/到目标是**状态**: 用状态令牌 --bad-bg/--ok-bg 铺整行 (面状=状态), 不碰单元格里的数字颜色
+      const sty=nearStop? ' style="background:var(--bad-bg)"' : (hitTgt? ' style="background:var(--ok-bg)"' : "");
+      return `<tr class="border-t border-slate-700/40"${sty}>`+
         `<td class="py-1.5"><b>${escH(r.name)}</b> <span class="font-mono text-xs text-slate-400">${escH(r.code)}</span> <span class="badge ${tagClass(r.tag)} !text-[10px]">${escH(tagText(r.tag))}</span></td>`+
         `<td class="text-xs text-slate-400">${escH(r.open_date||"")}</td><td class="text-right">${isNum(r.entry)?r.entry:dash}</td>`+
         `<td class="text-right">${isNum(live)?live:`<span class="text-slate-500" title="${t("jn_no_live")}">${dash}</span>`}</td>`+
         `<td class="text-right font-semibold ${col(pnl)}">${pc(pnl)}</td>`+
-        `<td class="text-right ${nearStop?"text-rose-300 font-bold":""}">${isNum(r.stop)?r.stop:dash}${nearStop?" ⛔":""}</td>`+
-        `<td class="text-right ${hitTgt?"text-emerald-300 font-bold":""}">${isNum(r.target)?r.target:dash}${hitTgt?" 🎯":""}</td>`+
+        `<td class="text-right ${nearStop?"font-bold":""}">${isNum(r.stop)?r.stop:dash}${nearStop?" ⛔":""}</td>`+
+        `<td class="text-right ${hitTgt?"font-bold":""}">${isNum(r.target)?r.target:dash}${hitTgt?" 🎯":""}</td>`+
         `<td class="text-right">${isNum(r.size_pct)?r.size_pct+"%":dash}</td><td class="text-right">${jnDays(r.open_date,(getData().meta&&getData().meta.data_date)||new Date().toISOString().slice(0,10))??dash}</td>`+
         `<td class="text-right whitespace-nowrap"><button class="segbtn" onclick="jnClose('${r.id}')">${t("jn_btn_close")}</button> <button class="segbtn" onclick="jnDel('${r.id}')">✕</button></td></tr>`;
     }).join("") : `<tr><td class="text-xs text-slate-500 py-2">${t("jn_empty_open")}</td></tr>`;
@@ -375,17 +400,17 @@ LS.init = function(ctx){
         <td class="text-right">${p.score??dash}</td>
         <td class="text-right">${isNum(r.entry)?r.entry:dash}</td>
         <td class="text-right">${isNum(r.exit_px)?r.exit_px:dash}</td>
-        <td class="text-right font-semibold ${r.ret>0?"text-emerald-300":(r.ret<0?"text-rose-300":"")}">${isNum(r.ret)?pcx(r.ret*100):dash}</td>
+        <td class="text-right font-semibold ${sgn(r.ret)}">${isNum(r.ret)?pcx(r.ret*100):dash}</td>
         <td class="text-right">${STN[r.status]||r.status||dash}</td></tr>`;
     }).join("");
     const hist = B.cycles.slice(0,-1).slice(-5).map(cy=>{
       const sm = cy.summary||{}; const pnl=(sm.pnl_done||0)+(sm.pnl_open||0);
-      return `<span class="rounded border border-slate-700/60 px-2 py-0.5 text-[11px] ${pnl>0?"text-emerald-300":(pnl<0?"text-rose-300":"text-slate-400")}">${escH(cy.start_date)} · ${sm.n_filled||0}${t("bw_u_stocks")} · ${money(pnl)}</span>`;
+      return `<span class="rounded border border-slate-700/60 px-2 py-0.5 text-[11px] ${sgn(pnl)||"text-slate-400"}">${escH(cy.start_date)} · ${sm.n_filled||0}${t("bw_u_stocks")} · ${money(pnl)}</span>`;
     }).join(" ");
     el.innerHTML = `
       <div class="flex items-center justify-between flex-wrap gap-2">
         <div class="text-sm font-semibold text-cyan-300">${t("bw_title")} <span class="text-xs text-slate-400 font-normal">${t("bw_sub")}</span></div>
-        <div class="text-xs text-slate-400">${t("bw_total")} <b class="${B.total.pnl>0?"text-emerald-300":(B.total.pnl<0?"text-rose-300":"")}">${money(B.total.pnl)}</b> · ${B.total.n_closed}/${B.total.n_cycles} ${t("bw_u_cycles")}${B.total.n_closed?` · ${t("bw_win_cycles")} ${B.total.n_win_cycles}/${B.total.n_closed}`:""}</div>
+        <div class="text-xs text-slate-400">${t("bw_total")} <b class="${sgn(B.total.pnl)}">${money(B.total.pnl)}</b> · ${B.total.n_closed}/${B.total.n_cycles} ${t("bw_u_cycles")}${B.total.n_closed?` · ${t("bw_win_cycles")} ${B.total.n_win_cycles}/${B.total.n_closed}`:""}</div>
       </div>
       <div class="text-xs text-slate-400 mt-1">${t("bw_cycle_at")} ${escH(last.start_date)} · ${escH(last.gate_note||"")} · ${(last.picks||[]).length} ${t("bw_u_stocks")}</div>
       ${rows? `<div class="overflow-x-auto mt-1"><table class="w-full text-[13px]">
@@ -444,7 +469,7 @@ LS.init = function(ctx){
           <td class="text-xs text-slate-400">${escH(po.date||"")}</td>
           <td class="text-right">${isNum(po.entry)?po.entry:dash}</td>
           <td class="text-right">${isNum(now)?now:`<span title="${t("cpf_no_live")}">${dash}</span>`}</td>
-          <td class="text-right font-semibold ${pnl>0?"text-emerald-300":(pnl<0?"text-rose-300":"")}">${pnl==null?dash:(pnl>0?"+":"")+pnl.toFixed(1)+"%"}</td>
+          <td class="text-right font-semibold ${sgn(pnl)}">${pnl==null?dash:(pnl>0?"+":"")+pnl.toFixed(1)+"%"}</td>
           <td class="text-right"><button class="segbtn cpfDel" data-i="${i}">✕</button></td></tr>`;
       }).join("");
       const vals = (cur.positions||[]).map(po=>{ const lv=cpfPrice(po.code); return (lv&&isNum(po.entry)&&po.entry>0)? lv.price/po.entry-1 : null; }).filter(x=>x!=null);
@@ -452,7 +477,7 @@ LS.init = function(ctx){
       body = `<div class="flex items-center gap-2 flex-wrap mb-1 mt-1">
           <input id="cpfCode" class="w-28" placeholder="${t("cpf_code_ph")}"/>
           <button id="cpfAdd" class="segbtn">${t("cpf_add")}</button>
-          <span class="text-xs" style="color:var(--muted)">${t("cpf_avg")} <b class="${avg>0?"text-emerald-300":(avg<0?"text-rose-300":"")}">${avg==null?dash:(avg>0?"+":"")+avg.toFixed(1)+"%"}</b> · ${(cur.positions||[]).length} ${t("bw_u_stocks")}</span>
+          <span class="text-xs" style="color:var(--muted)">${t("cpf_avg")} <b class="${sgn(avg)}">${avg==null?dash:(avg>0?"+":"")+avg.toFixed(1)+"%"}</b> · ${(cur.positions||[]).length} ${t("bw_u_stocks")}</span>
           ${(market&&market.key)==="ashare"?`<button id="cpfLive" class="segbtn" title="${t("cpf_live_tip")}">↻ ${t("cpf_live")}</button>`:""}
           <button id="cpfRen" class="segbtn">${t("cpf_rename")}</button>
           <button id="cpfDelPf" class="segbtn">${t("cpf_delete")}</button></div>
@@ -506,14 +531,16 @@ LS.init = function(ctx){
     const tot = P.total, totPnl = (tot.realized||0)+(tot.unrealized||0);
     const budget = (P.meta&&P.meta.budget)? cur+P.meta.budget.toLocaleString() : "";
     LS._ppCat = LS._ppCat===undefined ? "" : LS._ppCat;
+    // 达标档 10/15/20%: 状态药丸。0% 不能上绿 —— 绿药丸=达标, 一笔没达标就必须是灰的
+    const tier = (v)=> pill((v==null?dash:v+"%"), (v>=50?"ok":(v>0?"mid":"mute")));
     const chips = Object.entries(P.by_cat||{}).map(([k,a])=>{
       const pnl=(a.realized||0)+(a.unrealized||0);
       const sel = LS._ppCat===k;
       return `<div data-cat="${escH(k)}" class="ppcat rounded-lg border ${sel?"border-sky-400":"border-slate-700/60"} bg-slate-800/40 px-2.5 py-1.5 text-xs cursor-pointer hover:border-sky-500/70" title="${t("pp_click_cat")}">
         <div class="text-slate-400">${CATN[k]||k}</div>
         <div class="mt-0.5 text-slate-300">${t("pp_open")} <b>${a.n_open}</b> · ${t("pp_resolved")} <b>${a.n_resolved}</b></div>
-        ${a.win10!=null?`<div class="mt-0.5 text-[11px]" style="color:var(--muted)">${t("pp_tiers")} <b class="fv-ok">${a.win10}%</b> / <b class="fv-ok">${a.win15}%</b> / <b class="fv-ok">${a.win20}%</b></div>`:""}
-        <div class="font-semibold ${pnl>0?"text-emerald-300":(pnl<0?"text-rose-300":"text-slate-300")}">${money(pnl)}${a.avg_ret!=null?` <span class="text-[10px] text-slate-500 font-normal">${t("pp_avg")} ${pcx(a.avg_ret)}</span>`:""}</div>
+        ${a.win10!=null?`<div class="mt-0.5 text-[11px]" style="color:var(--muted)">${t("pp_tiers")} ${tier(a.win10)} ${tier(a.win15)} ${tier(a.win20)}</div>`:""}
+        <div class="font-semibold ${sgn(pnl)||"text-slate-300"}">${money(pnl)}${a.avg_ret!=null?` <span class="text-[10px] text-slate-500 font-normal">${t("pp_avg")} ${pcx(a.avg_ret)}</span>`:""}</div>
       </div>`;
     }).join("");
     const rowStock = r => `<td class="py-1"><b>${escH(r.name||"")}</b> <span class="font-mono text-xs text-slate-400">${escH(r.code)}</span> <span class="text-[10px] text-slate-400">${CATN[r.cat]||r.cat}</span></td>`;
@@ -521,13 +548,13 @@ LS.init = function(ctx){
       <td class="text-xs text-slate-400">${escH(r.fill_date||"")}</td>
       <td class="text-right">${isNum(r.fill_px)?r.fill_px:dash}</td>
       <td class="text-right">${isNum(r.exit_px)?r.exit_px:dash}</td>
-      <td class="text-right font-semibold ${r.ret>0?"text-emerald-300":(r.ret<0?"text-rose-300":"")}">${pcx(r.ret*100)}</td>
-      <td class="text-right ${r.pnl>0?"text-emerald-300":(r.pnl<0?"text-rose-300":"")}">${money(r.pnl)}</td></tr>`).join("");
+      <td class="text-right font-semibold ${sgn(r.ret)}">${pcx(r.ret*100)}</td>
+      <td class="text-right ${sgn(r.pnl)}">${money(r.pnl)}</td></tr>`).join("");
     const closedRows = (P.recent||[]).map(r=>`<tr class="border-t border-slate-700/40">${rowStock(r)}
       <td class="text-xs text-slate-400">${escH(r.fill_date||"")} → ${escH(r.exit_date||"")}</td>
       <td class="text-right">${isNum(r.fill_px)?r.fill_px:dash}</td>
       <td class="text-right">${isNum(r.exit_px)?r.exit_px:dash}</td>
-      <td class="text-right font-semibold ${r.ret>0?"text-emerald-300":(r.ret<0?"text-rose-300":"")}">${pcx(r.ret*100)}</td>
+      <td class="text-right font-semibold ${sgn(r.ret)}">${pcx(r.ret*100)}</td>
       <td class="text-right">${STN[r.status]||r.status}</td></tr>`).join("");
     const th = cols => `<tr class="text-slate-400 text-[11px]">${cols.map((c,i)=>`<th class="${i? "text-right":"text-left"} py-1 ${i===1?"!text-left":""}">${c}</th>`).join("")}</tr>`;
     let catDrill = "";
@@ -552,14 +579,14 @@ LS.init = function(ctx){
           <td class="text-right">${isNum(r.fill_px)?r.fill_px:dash}</td>
           <td class="text-[11px] text-slate-400">${escH(r.exit_date||dash)}</td>
           <td class="text-right">${isNum(r.exit_px)?r.exit_px:dash}</td>
-          <td class="text-right font-semibold ${r.ret>0?"text-emerald-300":(r.ret<0?"text-rose-300":"")}">${isNum(r.ret)?pcx(r.ret*100):dash}</td>
-          <td class="text-right">${isNum(r.max_gain)?`<span class="${(r.hits||[]).length?"text-emerald-300":""}">${pcx(r.max_gain*100)}</span>${(r.hits||[]).length?` <span class="text-[10px] text-emerald-400">✓${Math.max(...r.hits)}%</span>`:""}`:dash}</td>
+          <td class="text-right font-semibold ${sgn(r.ret)}">${isNum(r.ret)?pcx(r.ret*100):dash}</td>
+          <td class="text-right">${isNum(r.max_gain)?`<span class="${sgn(r.max_gain)}">${pcx(r.max_gain*100)}</span>${(r.hits||[]).length?" "+pill("✓"+Math.max(...r.hits)+"%","ok"):""}`:dash}</td>
           <td class="text-right">${STN2[r.status]||r.status||dash}</td></tr>`).join("") + `</table></div></div>`;
     } else if(LS._ppCat){ catDrill = `<div class="text-xs mt-2" style="color:var(--muted)">${t("pp_no_positions")}</div>`; }
     el.innerHTML = `
       <div class="flex items-center justify-between flex-wrap gap-2">
         <div class="text-sm font-semibold text-indigo-300">${t("pp_title")} <span class="text-xs text-slate-400 font-normal">${t("pp_sub").replace("__B__", budget)}</span></div>
-        <div class="text-xs ${totPnl>0?"text-emerald-300":(totPnl<0?"text-rose-300":"text-slate-400")}">${t("pp_total")} <b>${money(totPnl)}</b>${tot.win_rate!=null?` · ${t("pp_win")} ${tot.win_rate}%`:""} <span class="text-slate-500">(${P.meta.as_of||""})</span></div>
+        <div class="text-xs ${sgn(totPnl)||"text-slate-400"}">${t("pp_total")} <b>${money(totPnl)}</b>${tot.win_rate!=null?` · ${t("pp_win")} ${tot.win_rate}%`:""} <span class="text-slate-500">(${P.meta.as_of||""})</span></div>
       </div>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2">${chips}</div>
       ${catDrill}
