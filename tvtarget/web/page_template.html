@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>分析师目标 · FairValpha</title>
-<link rel="stylesheet" href="/shared/fv-shell.css?v=1">
+<link rel="stylesheet" href="/shared/fv-shell.css?v=2">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&display=swap">
 <style>
 /* 令牌全部来自 /shared/fv-shell.css (与两市工作台同名同值, 深海军蓝系)。
@@ -12,7 +12,8 @@
    design/mobile_nav_spec.md §6 的映射迁移为 --card/--text/--dim/--border/--head/--input。
    颜色铁律 (状态色 B 案): 评级这类"状态"一律实心药丸 (.fv-pill: 买入绿 / 卖出红 / 持有灰),
    带方向的数字才用裸色 (--up 红 / --down 绿)。
-   被美股工作台 iframe 内嵌时, 父页仍会注入 #fvOverride 活体取色 (VMAP), 令牌同名同值 → 恒等。 */
+   被美股工作台 iframe 内嵌时, 父页照旧注入 #fvOverride 活体取色 (VMAP, 旧令牌名);
+   fv-shell.css 的 :root.fv-embed 把旧名接回新名, 所以 iframe 里永远是父工作台当下那张皮。 */
 :root{ --bar:#1c5cab; --bar-strong:#2962ff; --chip-on:rgba(41,98,255,.25); }
 :root[data-theme="light"], body.light{ --bar:#9ec5f4; --bar-strong:#2962ff; --chip-on:rgba(41,98,255,.12); }
 @media (prefers-color-scheme: light){
@@ -110,7 +111,7 @@ button.ghost:hover{border-color:var(--accent); color:var(--text);}
 </head>
 <body>
 <script>window.FV_SHELL_CFG={page:"targets", from:"us", markets:false};</script>
-<script src="/shared/fv-shell.js?v=1"></script>
+<script src="/shared/fv-shell.js?v=2"></script>
 
 <div class="wrap">
 <header>
