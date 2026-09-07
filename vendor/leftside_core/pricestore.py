@@ -440,6 +440,8 @@ def update_daily(codes: list | None = None, lookback_days: int = 150) -> int:
       · 因子未变的代码 -> 只物化当日新增那几根 (除数 = adj_base);
       · 因子变了的代码 (除权除息) -> 整段重物化, 并更新 adj_base。
     这样"前复权历史平移"不再需要重抓, 也不会出现 v1 那种混库跳变。
+    落后多天时**从最早的那天开始一块块补**, 一直补到追平 (见 `_update_daily_by_date`);
+    落后超过一年就拒绝增量, 改走全量重建。
     """
     m = current()
     if m.name == "ashare" and m.fetch_bars_by_date is not None:
@@ -450,8 +452,16 @@ def update_daily(codes: list | None = None, lookback_days: int = 150) -> int:
     return _update_daily_legacy(m, codes, lookback_days)
 
 
-def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9) -> int | None:
-    """按 trade_date 增量。-> 写入的 bar 数; None = 该路径未启用 (调用方回退旧路径)。
+def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9,
+                          max_total_days: int = 250) -> int | None:
+    """按 trade_date 增量, **最早优先分块追平**。-> 写入的 bar 数;
+    None = 该路径未启用 (调用方回退旧路径)。
+
+    **为什么是最早优先** (2026-09-08 修): 原来这里写的是 `days[-max_days:]` —— 取待补
+    交易日的**最后** 40 天。副本落后 65 天时那一跑会写最新 40 天, `MAX(d)` 一步越到末日,
+    而中间那 25 天从此再也进不来: 下一次 `last = MAX(bars_raw.d)` 已经是末日, `days` 里
+    根本不会再出现它们。一个静默的洞, 越补越像补好了。现在改成 `days[:max_days]` 一块块
+    从最早的补, 循环到追平或撞守卫为止, 每块提交 (中途崩了下次从洞口续)。
 
     **未就绪守卫** (设计 §4 风险条, 2026-09-07 换库时下沉到这里): 某个交易日返回的行数
     < 在市股数 × ready_ratio 就判"源当天还没入库", **就地停下**并沿用昨日库 —— 不是跳过。
@@ -459,6 +469,11 @@ def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9) -> in
     守卫放在核心而不是只放在 run_a.sh 里: update_daily 的调用方不止 run_a.sh (factor_export、
     r1shadow、研究脚本、手工 `python -m ashare.pricestore update` 都会调), 而 Tushare 日线
     15-17 点北京才入库 —— 任何一个赶在那之前跑的调用方都能把半天的残缺行情写死进库。
+
+    **显式上限 max_total_days**: 落后超过这么多交易日 (默认 250 ≈ 一年) 就**拒绝增量、
+    一根不写**, 让人去 `research/rebuild_a_pricestore_tushare.py` 全量重建 —— 免得一次
+    update 拉几年 (每交易日 2 次 Tushare 调用 + 逐块重物化, 会顶穿 run_a.sh 的看门狗心跳),
+    也免得把"这份库其实早就该重建了"混在日更里悄悄糊过去。
     """
     conn = _conn()
     try:
@@ -471,67 +486,97 @@ def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9) -> in
         days = (m.trading_days or (lambda a, b: None))(_next_day(last), today)
         if days is None:
             return None                      # 交易日历不可用 = 路径未启用
-        days = [d for d in days if d > last][-max_days:]
-        if not days:
+        pending = sorted(d for d in days if d > last)
+        n_total = len(pending)
+        if not pending:
             log.info("价格库增量: 库内已到 %s, 无新交易日", last)
             _refresh_universe(m, conn)
             meta_set({"max_trade_date": last}, conn)
             return 0
-        n_bars, touched, changed = 0, set(), set()
-        base_map = {r[0]: (r[1], r[2]) for r in
-                    conn.execute("SELECT code, d, factor FROM adj_base")}
+        if n_total > max_total_days:
+            log.error("价格库增量: 落后 %d 个交易日 (%s..%s) 超过上限 %d —— 拒绝增量, 一根未写。"
+                      "落后这么多说明这份库该整库重建: research/rebuild_a_pricestore_tushare.py"
+                      " (增量每交易日 2 次 Tushare 调用 + 逐块重物化, 拉一年会顶穿看门狗)。"
+                      "库停在 %s。", n_total, pending[0], pending[-1], max_total_days, last)
+            return 0
+        log.info("价格库增量: 落后 %d 个交易日 (%s..%s), 按 %d 日一块最早优先追平",
+                 n_total, pending[0], pending[-1], max_days)
+        n_bars, touched = 0, set()
+        n_done, stopped = 0, False
         listed_n = conn.execute("SELECT COUNT(*) FROM universe WHERE status='L'").fetchone()[0] or 0
         min_rows = listed_n * ready_ratio    # 不取整: 2 只在市时 90% 是 1.8, 回来 1 只就该判残缺
-        done = []
-        for d in days:
-            raw = m.fetch_bars_by_date(d)
-            if raw is None:                  # 路径未启用 (源开关/无 token)
-                return None
-            if not raw or len(raw) < min_rows:
-                log.warning("Tushare 当日未就绪, 沿用昨日库 (%s 日线 %d 行 < 在市 %d 只的 %.0f%%) "
-                            "—— 增量停在 %s, 下次再补", d, len(raw), listed_n,
-                            ready_ratio * 100, done[-1] if done else last)
-                break
-            facs = (m.fetch_adj_by_date or (lambda x: {}))(d) or {}
-            conn.executemany("INSERT OR REPLACE INTO bars_raw(code,d,o,h,l,c,v,amt) "
-                             "VALUES(?,?,?,?,?,?,?,?)",
-                             [(c, d, *vals) for c, vals in raw.items()])
-            if facs:
-                conn.executemany("INSERT OR REPLACE INTO adj(code,d,factor) VALUES(?,?,?)",
-                                 [(c, d, float(f)) for c, f in facs.items()])
-            fresh = []
-            for code, vals in raw.items():
-                touched.add(code)
-                bd, bf = base_map.get(code, (None, None))
-                f = facs.get(code)
-                if bf is None or f is None:
-                    changed.add(code)        # 新股/缺因子 -> 整段重物化最稳
-                    continue
-                f = float(f)
-                if abs(f - bf) > 1e-9 * max(1.0, abs(bf)):
-                    changed.add(code)        # 除权除息: 基准变了, 整段平移
-                    continue
-                k = f / bf
-                fresh.append((code, d, vals[0] * k, vals[1] * k, vals[2] * k,
-                              vals[3] * k, vals[4], vals[5]))
-            if fresh:
-                conn.executemany("INSERT OR REPLACE INTO bars(code,d,o,h,l,c,v,amt) "
-                                 "VALUES(?,?,?,?,?,?,?,?)", fresh)
-            n_bars += len(raw)
-            done.append(d)
+        while pending and not stopped:
+            chunk, pending = pending[:max_days], pending[max_days:]
+            changed, done = set(), []
+            # 每块重读: 上一块的 materialize 可能刚把某些票的 adj_base 换成新基准
+            base_map = {r[0]: (r[1], r[2]) for r in
+                        conn.execute("SELECT code, d, factor FROM adj_base")}
+            for d in chunk:
+                raw = m.fetch_bars_by_date(d)
+                if raw is None:              # 路径未启用 (源开关/无 token)
+                    if not n_done and not done:
+                        return None          # 第一天就 None = 从没启用过, 让调用方回退
+                    # 中途才变 None: 路径本来是通的 (前面已经写进去了), 按"停下"处理,
+                    # 不能返回 None —— 那会让调用方回退逐股路径, 且跳过下面的 meta 收尾
+                    log.warning("价格库增量: 数据源中途不再返回数据 (%s), 停在 %s, 下次再补",
+                                d, done[-1] if done else "本块之前")
+                    stopped = True
+                    break
+                if not raw or len(raw) < min_rows:
+                    log.warning("Tushare 当日未就绪, 沿用昨日库 (%s 日线 %d 行 < 在市 %d 只的 %.0f%%) "
+                                "—— 增量停在 %s, 下次再补", d, len(raw), listed_n,
+                                ready_ratio * 100, done[-1] if done else last)
+                    stopped = True
+                    break
+                facs = (m.fetch_adj_by_date or (lambda x: {}))(d) or {}
+                conn.executemany("INSERT OR REPLACE INTO bars_raw(code,d,o,h,l,c,v,amt) "
+                                 "VALUES(?,?,?,?,?,?,?,?)",
+                                 [(c, d, *vals) for c, vals in raw.items()])
+                if facs:
+                    conn.executemany("INSERT OR REPLACE INTO adj(code,d,factor) VALUES(?,?,?)",
+                                     [(c, d, float(f)) for c, f in facs.items()])
+                fresh = []
+                for code, vals in raw.items():
+                    touched.add(code)
+                    bd, bf = base_map.get(code, (None, None))
+                    f = facs.get(code)
+                    if bf is None or f is None:
+                        changed.add(code)    # 新股/缺因子 -> 整段重物化最稳
+                        continue
+                    f = float(f)
+                    if abs(f - bf) > 1e-9 * max(1.0, abs(bf)):
+                        changed.add(code)    # 除权除息: 基准变了, 整段平移
+                        continue
+                    k = f / bf
+                    fresh.append((code, d, vals[0] * k, vals[1] * k, vals[2] * k,
+                                  vals[3] * k, vals[4], vals[5]))
+                if fresh:
+                    conn.executemany("INSERT OR REPLACE INTO bars(code,d,o,h,l,c,v,amt) "
+                                     "VALUES(?,?,?,?,?,?,?,?)", fresh)
+                n_bars += len(raw)
+                done.append(d)
+                conn.commit()
+                log.info("价格库增量 %s: %d 根 (因子 %d), 待重物化 %d",
+                         d, len(raw), len(facs), len(changed))
+            if changed:
+                materialize(sorted(changed), conn)   # 内含 commit
+                log.info("价格库增量: 因子变动 %d 只已整段重物化", len(changed))
             conn.commit()
-            log.info("价格库增量 %s: %d 根 (因子 %d), 待重物化 %d",
-                     d, len(raw), len(facs), len(changed))
-        if changed:
-            materialize(sorted(changed), conn)
-            log.info("价格库增量: 因子变动 %d 只已整段重物化", len(changed))
+            n_done += len(done)
+            left = len(pending) + len(chunk) - len(done)
+            if done:
+                log.info("价格库增量: 本块补 %s..%s 共 %d 日, 剩 %d 日",
+                         done[0], done[-1], len(done), left)
+            else:
+                log.info("价格库增量: 本块一日未补 (停在块首 %s), 剩 %d 日", chunk[0], left)
         _refresh_universe(m, conn)
         newest = conn.execute("SELECT MAX(d) FROM bars_raw").fetchone()[0]
         base_d = conn.execute("SELECT MAX(d) FROM adj_base").fetchone()[0]
         meta_set({"max_trade_date": newest or last, "rebase_date": base_d or "",
                   "unit_v": "股", "unit_amt": "元"}, conn)
-        log.info("价格库增量: %d/%d 个交易日入库, %d 根, 触及 %d 只 (末日 %s)",
-                 len(done), len(days), n_bars, len(touched), newest)
+        log.info("价格库增量: %d/%d 个交易日入库, %d 根, 触及 %d 只 (末日 %s)%s",
+                 n_done, n_total, n_bars, len(touched), newest,
+                 "" if n_done == n_total else ", 剩 %d 日下次再补" % (n_total - n_done))
         return n_bars
     finally:
         conn.close()
