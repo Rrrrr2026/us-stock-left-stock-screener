@@ -98,6 +98,35 @@ def _tier(c):
 # ===========================================================================
 #  快照加载
 # ===========================================================================
+#: **演示种子快照**: 仓库里随代码发布的一份合成快照 (让新克隆出来的仓库日期选择器不是空的),
+#: 候选是 `make_demo_data.py` 造的假票 —— 名字一律以"演示"开头, 价格是合成序列的值,
+#: 与真实行情毫无关系。前端照常给人看 (它就是演示用的), 但**任何按价格做的重放/锚定统计
+#: 都必须把它排除**: 它的假价格会在真代码的真 bar 上乱锚 (实测 11 条全部 fallback), 既拉低
+#: 命中率, 又会在 `build_and_run` 的"同一 (code, as_of) 先到先得"里抢走真快照的名额 ——
+#: 2026-09-08 把 day_2026-07-01.json 的 data_date 按价格证据改成 06-30 之后, 它正好和这份
+#: 种子快照撞成同一个 as_of, 而按文件名排序它排在前面, 不排除就会把 200 条真候选顶掉。
+#: 判据 (满足其一): ① meta 里显式标了 demo/seed (以后新造种子请打这个标);
+#: ② 该市场的已知种子文件名白名单; ③ 兜底 —— 候选名全部以"演示"开头 (合成盘的签名,
+#: 真实 A 股没有这种名字, 美股是英文名, 都不会误伤)。**不删文件、不改文件**, 只在装载处跳过。
+DEMO_SNAPSHOT_FILES = {
+    "ashare": {"day_2026-06-30.json"},      # 14 条合成候选, n_scanned=14
+    "us": set(),
+}
+
+
+def is_demo_snapshot(path: str, meta: dict, cands: list) -> bool:
+    """这份快照是不是 `make_demo_data.py` 造的演示种子 (价格是假的)?"""
+    if meta.get("demo") or meta.get("seed") or meta.get("demo_seed"):
+        return True
+    try:
+        known = DEMO_SNAPSHOT_FILES.get(current().name) or set()
+    except Exception:                                    # Market 未注入 (纯离线自测)
+        known = set()
+    if os.path.basename(path) in known:
+        return True
+    return bool(cands) and all(str(c.get("name") or "").startswith("演示") for c in cands)
+
+
 def load_snapshots() -> list[dict]:
     out = []
     for p in sorted(glob.glob(os.path.join(_paths()[0], "day_*.json"))):
@@ -109,6 +138,9 @@ def load_snapshots() -> list[dict]:
         meta = j.get("meta") or {}
         cands = j.get("candidates") or []
         if not cands:
+            continue
+        if is_demo_snapshot(p, meta, cands):
+            log.info("快照 %s 是演示种子 (合成价格), 不进回放样本", os.path.basename(p))
             continue
         out.append({
             "run_date": meta.get("run_date") or os.path.basename(p)[4:14],
