@@ -23,3 +23,11 @@ Thumbs.db
 # pre-core-merge backups (local only)
 */_pre_core_backup/
 tvtarget/output/
+
+# tvtarget 运行时快照: 每日重算的产物, 只有种子表 screen_seed.json 入 git
+# (2026-09-07: history_snap/beat 曾被误 add 进仓库, 其中 screen_2026-08-31.json 还是
+#  08-30 的逐字节副本 —— 假快照污染了回看; 已 git rm --cached 并在此钉死)
+tvtarget/data/history_snap/
+tvtarget/data/beat/
+tvtarget/data/screen.json
+!tvtarget/data/screen_seed.json
