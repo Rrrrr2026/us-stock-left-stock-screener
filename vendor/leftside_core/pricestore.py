@@ -450,8 +450,16 @@ def update_daily(codes: list | None = None, lookback_days: int = 150) -> int:
     return _update_daily_legacy(m, codes, lookback_days)
 
 
-def _update_daily_by_date(m, max_days: int = 40) -> int | None:
-    """按 trade_date 增量。-> 写入的 bar 数; None = 该路径未启用 (调用方回退旧路径)。"""
+def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9) -> int | None:
+    """按 trade_date 增量。-> 写入的 bar 数; None = 该路径未启用 (调用方回退旧路径)。
+
+    **未就绪守卫** (设计 §4 风险条, 2026-09-07 换库时下沉到这里): 某个交易日返回的行数
+    < 在市股数 × ready_ratio 就判"源当天还没入库", **就地停下**并沿用昨日库 —— 不是跳过。
+    必须是停下: `days` 是连续的, 跳过 D 却写了 D+1, `MAX(d)` 就越过了 D, 那一天永远补不回来。
+    守卫放在核心而不是只放在 run_a.sh 里: update_daily 的调用方不止 run_a.sh (factor_export、
+    r1shadow、研究脚本、手工 `python -m ashare.pricestore update` 都会调), 而 Tushare 日线
+    15-17 点北京才入库 —— 任何一个赶在那之前跑的调用方都能把半天的残缺行情写死进库。
+    """
     conn = _conn()
     try:
         last = conn.execute("SELECT MAX(d) FROM bars_raw").fetchone()[0]
@@ -472,13 +480,18 @@ def _update_daily_by_date(m, max_days: int = 40) -> int | None:
         n_bars, touched, changed = 0, set(), set()
         base_map = {r[0]: (r[1], r[2]) for r in
                     conn.execute("SELECT code, d, factor FROM adj_base")}
+        listed_n = conn.execute("SELECT COUNT(*) FROM universe WHERE status='L'").fetchone()[0] or 0
+        min_rows = listed_n * ready_ratio    # 不取整: 2 只在市时 90% 是 1.8, 回来 1 只就该判残缺
+        done = []
         for d in days:
             raw = m.fetch_bars_by_date(d)
             if raw is None:                  # 路径未启用 (源开关/无 token)
                 return None
-            if not raw:
-                log.warning("价格库增量: %s 无日线 (源未就绪或非交易日), 跳过", d)
-                continue
+            if not raw or len(raw) < min_rows:
+                log.warning("Tushare 当日未就绪, 沿用昨日库 (%s 日线 %d 行 < 在市 %d 只的 %.0f%%) "
+                            "—— 增量停在 %s, 下次再补", d, len(raw), listed_n,
+                            ready_ratio * 100, done[-1] if done else last)
+                break
             facs = (m.fetch_adj_by_date or (lambda x: {}))(d) or {}
             conn.executemany("INSERT OR REPLACE INTO bars_raw(code,d,o,h,l,c,v,amt) "
                              "VALUES(?,?,?,?,?,?,?,?)",
@@ -505,6 +518,7 @@ def _update_daily_by_date(m, max_days: int = 40) -> int | None:
                 conn.executemany("INSERT OR REPLACE INTO bars(code,d,o,h,l,c,v,amt) "
                                  "VALUES(?,?,?,?,?,?,?,?)", fresh)
             n_bars += len(raw)
+            done.append(d)
             conn.commit()
             log.info("价格库增量 %s: %d 根 (因子 %d), 待重物化 %d",
                      d, len(raw), len(facs), len(changed))
@@ -516,8 +530,8 @@ def _update_daily_by_date(m, max_days: int = 40) -> int | None:
         base_d = conn.execute("SELECT MAX(d) FROM adj_base").fetchone()[0]
         meta_set({"max_trade_date": newest or last, "rebase_date": base_d or "",
                   "unit_v": "股", "unit_amt": "元"}, conn)
-        log.info("价格库增量: %d 个交易日, %d 根, 触及 %d 只 (末日 %s)",
-                 len(days), n_bars, len(touched), newest)
+        log.info("价格库增量: %d/%d 个交易日入库, %d 根, 触及 %d 只 (末日 %s)",
+                 len(done), len(days), n_bars, len(touched), newest)
         return n_bars
     finally:
         conn.close()
@@ -550,8 +564,23 @@ def _update_daily_legacy(m, codes: list | None, lookback_days: int) -> int:
     整体平移 —— 增量只适合日常; 检测到大偏差的代码应重新全量, 这里先记日志)。
     lookback 必须 >= ~90自然日: fetch_bars_bulk 有 len<60 根即弃的残缺序列检查
     (为长历史重建而设), 10天回看会被整批吞掉 — 2026-09-01 r1shadow 增量静默零写入
-    事故的根因, 守卫直到指数先更新才暴露。150天还顺带刷新近期复权漂移。"""
+    事故的根因, 守卫直到指数先更新才暴露。150天还顺带刷新近期复权漂移。
+
+    ⚠ **v2 库上禁止走这条路** (2026-09-07 换库): 这里 _upsert 的是数据源直给的前复权价,
+    复权基准是"抓取那天", 与 v2 的 adj_base 无关 —— 一旦写进 bars 就会把物化 qfq 口径改花、
+    amt 抹成 NULL、bars 与 bars_raw/adj 脱钩。v2 的日更只有一条腿: `_update_daily_by_date`。
+    调用方 (run_a.sh / factor_export / 研究脚本) 若在 CONFIG.source.bars 还没切 tushare 时
+    调 update_daily, 宁可什么都不写并告警, 也不能悄悄把库改花。"""
     conn = _conn()
+    try:
+        if conn.execute("SELECT 1 FROM bars_raw LIMIT 1").fetchone() is not None:
+            log.error("价格库是 schema v2 (原始价+因子), 但按日增量路径未启用 "
+                      "(CONFIG.source.bars 未切 tushare 或无 token) —— 拒绝用逐股回看写库, "
+                      "本次不更新。库停在 %s。", meta_get("max_trade_date", "?"))
+            conn.close()
+            return 0
+    except sqlite3.OperationalError:
+        pass                                 # 老库没有 bars_raw 表 -> 正常走 v1 路径
     have = last_dates(conn)
     if codes is None:
         codes = sorted(have)
