@@ -176,14 +176,14 @@
   #tvHeat{ height:300px; }
   .tradingview-widget-container{ height:100%; }
 
-  /* ===== 详情弹窗标签页 ===== */
-  #dTabs{ display:flex; flex-wrap:wrap; gap:5px; margin-bottom:10px; }
-  #dTabs .dtabchip{ display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:3px 9px;
+  /* ===== 详情弹窗: 股票标签条 (#dStockTabs) 与页签导航 (#dTabs) ===== */
+  #dStockTabs{ display:flex; flex-wrap:wrap; gap:5px; margin-bottom:10px; }
+  #dStockTabs .dtabchip{ display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:3px 9px;
     border-radius:5px; background:var(--input); border:1px solid var(--inputborder); color:var(--dim);
     cursor:pointer; user-select:none; }
-  #dTabs .dtabchip.on{ background:#2962ff; border-color:#2962ff; color:#fff; }
-  #dTabs .dtabchip .x{ opacity:.6; font-size:11px; padding:0 1px; }
-  #dTabs .dtabchip .x:hover{ opacity:1; }
+  #dStockTabs .dtabchip.on{ background:#2962ff; border-color:#2962ff; color:#fff; }
+  #dStockTabs .dtabchip .x{ opacity:.6; font-size:11px; padding:0 1px; }
+  #dStockTabs .dtabchip .x:hover{ opacity:1; }
   .dnavbtn{ border:1px solid var(--inputborder); background:var(--input); color:var(--dim);
     border-radius:5px; padding:2px 9px; cursor:pointer; font-size:13px; }
   .dnavbtn:hover{ color:var(--text); }
@@ -244,10 +244,6 @@
   #sideNav a[draggable="true"]::after{ content:"⠿"; float:right; opacity:.18; font-size:11px; }
   #sideNav a[draggable="true"]:hover::after{ opacity:.75; }
   section:hover > .secHandle{ opacity:.9; }
-  #dragHint{ position:fixed; bottom:18px; left:50%; transform:translateX(-50%); z-index:65;
-    background:var(--card); color:var(--text); border:1px solid rgba(41,98,255,.45);
-    border-radius:10px; padding:10px 14px; font-size:13px; display:flex; gap:10px;
-    align-items:center; box-shadow:0 10px 30px rgba(0,0,0,.4); max-width:92vw; }
 
   /* ===== 侧栏控件 v3: 等宽大按钮 ===== */
   #navCtrls{ gap:7px; }
@@ -277,7 +273,7 @@
       <select id="dateSel" class="hidden" data-i18n-title="date_sel_title" title="回看历史扫描结果"></select><span id="dateScrub" class="hidden" data-i18n-title="date_sel_title" title="回看历史扫描结果"><span id="dsTrack"><span id="dsBars"></span></span><span id="dsLabel">—</span></span>
       <button id="refreshBtn" class="segbtn" title="拉取最新已发布数据（重新扫描需运行本地更新脚本）" data-i18n="refresh_btn">🔄 刷新数据</button>
       <button id="langBtn" class="segbtn" title="中文 / English">EN</button>
-      <button id="themeBtn" class="segbtn" title="点击切换：白天 / 黑夜 / 跟随系统">🌙 黑夜</button>
+      <button id="themeBtn" class="segbtn" data-i18n-title="theme_btn_title" title="点击切换：白天 / 黑夜 / 跟随系统">🌙 黑夜</button>
       <button id="authBtn" class="segbtn">👤 登录</button>
     </div>
     <div class="flex items-center justify-between flex-wrap gap-x-4 gap-y-0.5 mt-1 text-xs text-slate-400">
@@ -556,7 +552,8 @@
   </div>
 <aside id="drawer" class="drawer fixed top-0 right-0 h-full w-full md:w-[68%] lg:w-[60%] border-l z-50 translate-x-full overflow-y-auto" style="background:var(--drawer);border-color:var(--border)">
   <div class="p-5">
-    <div id="dTabs"></div>
+    <!-- 股票标签条 (多股并看): dtabsRender 写入; 与下方页签导航 #dTabs 分开 id -->
+    <div id="dStockTabs"></div>
     <div class="flex items-start justify-between mb-2">
       <div>
         <h3 id="dTitle" class="text-xl font-bold text-white">—</h3>
@@ -684,6 +681,10 @@
   const T = {
     zh:{
       title:"FairValpha · 美股工作台",
+      page_title:"FairValpha · 美股工作台",
+      theme_light:"☀️ 白天", theme_dark:"🌙 黑夜", theme_auto:"🖥️ 跟随系统",
+      theme_btn_title:"点击切换：白天 / 黑夜 / 跟随系统",
+      drag_handle:"按住拖动排序", dtab_prev:"上一个 (←)", dtab_next:"下一个 (→)",
       subtitle:"全美股(市值≥$1亿) · 高景气板块内 · 回踩支撑/接近前低的左侧机会 · 技术 × 基本面交叉打分",
       updated:"最后更新：", datasource:"数据源：Yahoo Finance（全美股 · GICS 板块）· 价格单位 USD",
       disclaimer:'⚠️ <b>免责声明</b>：本系统仅对美股做技术/基本面数据的自动化整理与形态筛选，<b>不构成任何投资建议</b>。“左侧买入”是在下跌中、支撑确认前进场，风险天然更高（可能继续下跌或破位）。价格单位为美元(USD)。所有标的需<b>人工复核</b>，使用者自负盈亏与风控。',
@@ -927,6 +928,10 @@
     },
     en:{
       title:"US Stocks · Left-Side Support Screener",
+      page_title:"FairValpha · US Desk",
+      theme_light:"☀️ Light", theme_dark:"🌙 Dark", theme_auto:"🖥️ System",
+      theme_btn_title:"Click to cycle: Light / Dark / System",
+      drag_handle:"Hold to drag & reorder", dtab_prev:"Previous (←)", dtab_next:"Next (→)",
       subtitle:"All US (mcap ≥ $100M) · within high-prosperity sectors · pullback-to-support / near prior-low setups · technical × fundamental cross-score",
       updated:"Updated: ", datasource:"Source: Yahoo Finance (All US · GICS sectors) · prices in USD",
       disclaimer:'⚠️ <b>Disclaimer</b>: This tool only performs automated organization and pattern screening of technical/fundamental data for US equities and is <b>not investment advice</b>. "Left-side buying" enters during a decline, before support is confirmed, and is inherently higher-risk (price may keep falling or break down). Prices are in USD. Verify every name <b>manually</b>; users bear their own P&amp;L and risk.',
@@ -1207,6 +1212,8 @@
   function colLabel(c){ const k=COL_I18N[c.key]; return (k? t(k) : c.label); }
   function applyStaticI18n(){
     document.documentElement.lang = (LANG==="en")?"en":"zh-CN";
+    document.title = t("page_title");
+    try{ applyTheme(); }catch(e){}          // 主题按钮文案 (白天/黑夜/跟随系统) 也随语言切换
     document.querySelectorAll("[data-i18n]").forEach(el=>{ el.textContent=t(el.dataset.i18n); });
     document.querySelectorAll("[data-i18n-html]").forEach(el=>{ el.innerHTML=t(el.dataset.i18nHtml); });
     document.querySelectorAll("[data-i18n-ph]").forEach(el=>{ el.placeholder=t(el.dataset.i18nPh); });
@@ -1288,7 +1295,7 @@
   function effLight(){ return themeMode==="light" || (themeMode==="auto" && mqLight && mqLight.matches); }
   function applyTheme(){
     document.body.classList.toggle("light", effLight());
-    $("#themeBtn").textContent = themeMode==="light" ? "☀️ 白天" : (themeMode==="dark" ? "🌙 黑夜" : "🖥️ 跟随系统");
+    $("#themeBtn").textContent = themeMode==="light" ? t("theme_light") : (themeMode==="dark" ? t("theme_dark") : t("theme_auto"));
     try{ localStorage.setItem(THEME_KEY, themeMode); }catch(e){}
   }
   applyTheme();
@@ -2826,23 +2833,28 @@
 
   // ---------- 板块自由拖动排序 (顺序存 us_seclayout_v1, 随账号云同步) ----------
   (function(){
-    const SEC_IDS = ["searchCard","deckCard","wlCard","qlCard","btCard","indCard","tgtCard","tblCard","jnCard"];
+    const SEC_IDS = ["searchCard","deckCard","tblCard","wlCard","qlCard","btCard","indCard","tgtCard","jnCard"];
     const SEC_KEY = "us_seclayout_v1";
     const first = document.getElementById(SEC_IDS[0]);
     if(!first) return;
     const cont = first.parentElement;
-    try{                                            // 应用保存的顺序
+    const applyOrder = (ids)=>{
+      let prev = null;
+      ids.forEach(id=>{
+        const el = document.getElementById(id); if(!el) return;
+        if(prev) prev.after(el);
+        else{ const anchor = SEC_IDS.map(i=>document.getElementById(i)).find(x=>x && x!==el);
+              if(anchor) cont.insertBefore(el, anchor); }
+        prev = el;
+      });
+    };
+    try{
       const saved = JSON.parse(localStorage.getItem(SEC_KEY) || "[]");
-      if(Array.isArray(saved) && saved.length){
-        let prev = null;
-        saved.forEach(id=>{
-          const el = document.getElementById(id); if(!el) return;
-          if(prev) prev.after(el);
-          else{ const anchor = SEC_IDS.map(i=>document.getElementById(i)).find(x=>x && x!==el);
-                if(anchor) cont.insertBefore(el, anchor); }
-          prev = el;
-        });
-      }
+      // 已保存(含云同步)的顺序永远优先, 不迁移不覆盖 —— 老用户的手排版面保持原样;
+      // 没保存过才铺开 SEC_IDS 默认顺序 (2026-09-07: 候选主表 tblCard 提到第3位,
+      // 在搜索条+作战台之后。此前默认顺序是 HTML 书写顺序, SEC_IDS 只当 id 清单用)。
+      if(Array.isArray(saved) && saved.length) applyOrder(saved);
+      else applyOrder(SEC_IDS);
     }catch(e){}
     const glueOv = ()=>{ const ov=document.getElementById("ovStrip"), dk=document.getElementById("deckCard");
       if(ov && dk) dk.after(ov); };
@@ -2851,7 +2863,8 @@
       const sec = document.getElementById(id); if(!sec) return;
       if(!sec.style.position) sec.style.position = "relative";
       const h = document.createElement("div");
-      h.className = "secHandle"; h.title = "按住拖动排序"; h.textContent = "⠿";
+      h.className = "secHandle"; h.textContent = "⠿";
+      h.setAttribute("data-i18n-title", "drag_handle"); h.title = t("drag_handle");
       sec.appendChild(h);
       h.addEventListener("mousedown", ()=>sec.setAttribute("draggable", "true"));
       sec.addEventListener("dragstart", (e)=>{ sec.classList.add("secDragging");
@@ -3092,9 +3105,9 @@
   // ---- 详情弹窗标签页 + 挨个翻页 ----
   const DTABS = { list: [], cur: null, MAX: 8 };
   function dtabsRender(){
-    const el = document.getElementById("dTabs"); if(!el) return;
+    const el = document.getElementById("dStockTabs"); if(!el) return;
     el.innerHTML = DTABS.list.map(x=>`<span class="dtabchip ${x.code===DTABS.cur?"on":""}" data-c="${x.code}">${x.name||x.code}<span class="x" data-x="${x.code}">✕</span></span>`).join("")
-      + (DTABS.list.length>1? `<button class="dnavbtn" id="dPrev" title="上一个 (←)">◀</button><button class="dnavbtn" id="dNext" title="下一个 (→)">▶</button>`:"");
+      + (DTABS.list.length>1? `<button class="dnavbtn" id="dPrev" title="${escH(t("dtab_prev"))}">◀</button><button class="dnavbtn" id="dNext" title="${escH(t("dtab_next"))}">▶</button>`:"");
     el.querySelectorAll(".dtabchip").forEach(ch=>{ ch.onclick=(e)=>{ if(e.target.dataset.x) return;
       const it = DTABS.list.find(x=>x.code===ch.dataset.c); if(it) openDetail(it.c); }; });
     el.querySelectorAll(".x").forEach(x=>{ x.onclick=(e)=>{ e.stopPropagation();
