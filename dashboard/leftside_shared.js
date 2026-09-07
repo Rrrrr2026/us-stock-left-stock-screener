@@ -69,7 +69,7 @@ LS.init = function(ctx){
       (SEG && !SEG.n_resolved ? `<div class="col-span-full text-xs" style="color:var(--muted)">⏳ ${t("bt_seg_pending_a")}${SEG.n_open||0}${t("bt_seg_pending_b")}</div>`:"") +
       stat(t("bt_n"), P.n_resolved, `${t("bt_n_open")} ${P.n_open||0}`, null, "n") +
       stat(t("bt_fill"), pct(fillR), null, null, "fill") +
-      stat(t("bt_win"), pct(P.win10), t("bt_win_sub") + (isNum(P.win_tR)?` · ${t("bt_tr")} ${pct(P.win_tR)}`:""), P.win10>=0.6?"text-emerald-300":"text-amber-300", "win") +
+      stat(t("bt_win"), pct(P.win10), t("bt_win_sub") + (isNum(P.win_tR)?` · ${t("bt_tr")} ${pct(P.win_tR)}`:""), P.win10>=0.6?"fv-ok":"text-amber-300", "win") +
       stat(t("bt_reach5"), pct(P.reach5), t("bt_reach5_sub"), isNum(P.reach5)&&isNum(P.win10)&&(P.reach5-P.win10)>=0.2?"text-amber-300":null, "reach5") +
       stat(t("bt_ret"), (P.avg_ret>0?"+":"")+pct(P.avg_ret,1), t("bt_ret_sub") + (isNum(P.avg_ret_tR)?` · ${t("bt_tr")} ${(P.avg_ret_tR>0?"+":"")+pct(P.avg_ret_tR,1)}`:""), P.avg_ret>0?"text-emerald-300":"text-rose-300", "ret") +
       stat(t("bt_days_med"), isNum(P.med_days)?P.med_days:dash, t("bt_days_sub"), null, "days");
@@ -85,7 +85,7 @@ LS.init = function(ctx){
     const th=`<tr class="text-slate-400 text-[11px]"><th class="text-left py-1">${t("bt_col_tag")}</th><th class="text-right">${t("bt_col_n")}</th><th class="text-right">${t("bt_col_win")}</th><th class="text-right">${t("bt_col_r5")}</th><th class="text-right">${t("bt_col_mfe")}</th><th class="text-right">${t("bt_col_ret")}</th><th class="text-right">${t("bt_col_d")}</th></tr>`;
     $("#btTagTbl").innerHTML = th + rows.map(([k,s])=>{
       const low=(s.n_resolved||0)<12;
-      const wc=!isNum(s.win10)?"":(s.win10>=(B.agg.p0||0)?"text-emerald-300":"text-rose-300");
+      const wc=!isNum(s.win10)?"":(s.win10>=(B.agg.p0||0)?"fv-ok":"fv-bad");
       const rc=!isNum(s.avg_ret)?"":(s.avg_ret>0?"text-emerald-300":"text-rose-300");
       return `<tr class="border-t border-slate-700/40 ${low?"opacity-60":""}"><td class="py-1"><span class="badge ${tagClass(k)}">${escH(tagText(k))}</span>${low?` <span class="text-[10px] text-slate-500">${t("bt_low_n")}</span>`:""}</td><td class="text-right">${s.n_resolved||0}</td><td class="text-right ${wc}">${pct(s.win10)}</td><td class="text-right">${pct(s.reach5)}</td><td class="text-right text-slate-400">${isNum(s.mfe_q50)?pct(s.mfe_q50,1):dash}<span class="text-[10px]">/${isNum(s.mfe_q75)?pct(s.mfe_q75,1):dash}</span></td><td class="text-right ${rc}">${isNum(s.avg_ret)?((s.avg_ret>0?"+":"")+pct(s.avg_ret,1)):dash}</td><td class="text-right">${isNum(s.med_days)?s.med_days:dash}</td></tr>`;
     }).join("");
@@ -103,7 +103,7 @@ LS.init = function(ctx){
     $("#btRecos").innerHTML = rec.length? Object.values(groups).map(g=>{
       const r=g.r;
       const lab=(r.seg_kind==="combo")? `${escH(tagText(r.tag))} × ${t("bt_g_"+r.growth)}` : escH(tagText(r.tag));
-      return `<div class="w-full"><div class="text-xs text-slate-300 mb-1">${t("bt_reco_seg")} <span class="badge ${tagClass(r.tag)}">${lab}</span> ${t("bt_reco_hist")} <b class="text-emerald-300">${pct(r.seg_win_post)}</b> <span class="text-slate-500">(n=${r.seg_n} · ${t("bt_reco_vs")} ${pct(B.agg.p0)})</span></div><div class="flex flex-wrap gap-2">`+
+      return `<div class="w-full"><div class="text-xs text-slate-300 mb-1">${t("bt_reco_seg")} <span class="badge ${tagClass(r.tag)}">${lab}</span> ${t("bt_reco_hist")} <b class="fv-ok">${pct(r.seg_win_post)}</b> <span class="text-slate-500">(n=${r.seg_n} · ${t("bt_reco_vs")} ${pct(B.agg.p0)})</span></div><div class="flex flex-wrap gap-2">`+
         g.items.map(x=>`<span class="badge tag-strong cursor-pointer" onclick="btOpen('${escH(x.code)}')" title="${t("bt_reco_tip2")}">${escH(x.code)} ${escH(String(x.name||"").slice(0,10))} <span class="text-[10px] opacity-70">${t("composite")} ${isNum(x.fs)?x.fs.toFixed(1):dash}</span></span>`).join("")+`</div></div>`;
     }).join("") : `<span class="text-xs text-slate-500">${t("bt_reco_none")}</span>`;
     const rc2=(B.recent||[]).filter(e=>inSeg(e.tag)).slice(0,10);
@@ -141,7 +141,7 @@ LS.init = function(ctx){
     const mark = i<0? "" : ` <span class="text-sky-300">${arr[i].dir==="desc"?"▼":"▲"}${arr.length>1?(i+1):""}</span>`;
     return `<th class="${align||"text-left"} py-1 cursor-pointer select-none hover:text-sky-300" title="${t("sort_hint")}" onclick="sortClick('${which}','${k}',event)">${label}${mark}</th>`;
   }
-  const p20cell=(v,n,tip)=> isNum(v)? `<span class="${v>=50?"text-emerald-300":(v>=30?"text-amber-300":"text-slate-300")}" title="${tip} · n=${n||dash}">${v.toFixed(0)}%</span>` : dash;
+  const p20cell=(v,n,tip)=> isNum(v)? `<span class="${v>=50?"fv-ok":(v>=30?"text-amber-300":"text-slate-300")}" title="${tip} · n=${n||dash}">${v.toFixed(0)}%</span>` : dash;
   // ---------- 💎 错杀候选 ----------
   const csGet=(c,k)=>({score:c.cuosha_score, dd:c.cuosha_dd, expl:c.cuosha_expl, g:c._g, up:c.cuosha_upside, p20:c.cuosha_p20, name:c.code, ind:c.industry, tag:c.tag})[k];
   function renderCuosha(){
@@ -334,9 +334,25 @@ LS.init = function(ctx){
     const cs = (D.candidates||[]).filter(c=>c.cuosha_score).length;
     const segTag = Object.entries(((window.__BT__||{}).agg||{}).by_tag||{}).find(([k])=>k.indexOf("深跌")>=0);
     const segWin = segTag && isNum(segTag[1].win10) ? (segTag[1].win10*100).toFixed(0) : null;
-    el.innerHTML = `<div class="typeline" style="margin-top:0"><span id="deckLine">` +
-      `${t(isUS?"deck_temp_us":"deck_temp_a")} <b>${temp==null?dash:temp.toFixed(0)} → ${pos[0]}</b>` +
-      (segWin? `；${t("deck_line_seg")} <b>${segWin}%</b>`:"") + `；${t("deck_cs")} <b>${cs}</b></span></div>`;
+    // 2026-09-07 老板拍板: 只留 数据日期 / 机会温度(计) / 试仓等级(药丸), 其余下线, 整卡缩小。
+    const opp = D.meta.opp || null;
+    const otemp = (opp && isNum(opp.score)) ? opp.score : temp;      // 机会温度: 温度计分优先
+    const VD = {deploy:"opp_v_deploy", lean_in:"opp_v_lean", normal:"opp_v_normal", hold_fire:"opp_v_hold"};
+    const lvl = (opp && VD[opp.verdict]) ? t(VD[opp.verdict]) : pos[0];
+    const lvlCls = otemp==null ? "mid" : (otemp>=60 ? "ok" : (otemp>=40 ? "mid" : "no"));
+    const ddate = D.meta.data_date || D.meta.run_date || dash;
+    const tail = [];
+    if(isUS && temp!=null) tail.push(`${t("deck_temp_us")} <b>${temp.toFixed(0)} → ${pos[0]}</b>`);
+    if(segWin) tail.push(`${t("deck_line_seg")} <b>${segWin}%</b>`);
+    tail.push(`${t("deck_cs")} <b>${cs}</b>`);
+    el.innerHTML = `<div class="deckGrid">` +
+      `<div class="deckCell"><div class="statK">${t("ov_date")}</div><div class="statV">${escH(String(ddate))}</div></div>` +
+      `<div class="deckCell"><div class="statK">${t("deck_temp")}</div>` +
+        `<div class="statV">${otemp==null?dash:otemp.toFixed(0)}<small>/100</small></div>` +
+        `<div class="meterbg" style="height:5px"><div class="meterfill" style="height:5px;background:#2962ff;width:${otemp==null?0:Math.max(2,Math.min(100,otemp))}%"></div></div></div>` +
+      `<div class="deckCell"><div class="statK">${t("deck_lvl")}</div><span class="dpill ${lvlCls}">${escH(lvl)}</span></div>` +
+      `</div>` +
+      `<div class="typeline"><span id="deckLine">${tail.join("；")}</span></div>`;
   }
 
   // ---------- 📆 双周量化组合 (biweekly_data.js -> window.__BW__) ----------
@@ -496,7 +512,7 @@ LS.init = function(ctx){
       return `<div data-cat="${escH(k)}" class="ppcat rounded-lg border ${sel?"border-sky-400":"border-slate-700/60"} bg-slate-800/40 px-2.5 py-1.5 text-xs cursor-pointer hover:border-sky-500/70" title="${t("pp_click_cat")}">
         <div class="text-slate-400">${CATN[k]||k}</div>
         <div class="mt-0.5 text-slate-300">${t("pp_open")} <b>${a.n_open}</b> · ${t("pp_resolved")} <b>${a.n_resolved}</b></div>
-        ${a.win10!=null?`<div class="mt-0.5 text-[11px]" style="color:var(--muted)">${t("pp_tiers")} <b class="text-emerald-300">${a.win10}%</b> / <b class="text-emerald-300">${a.win15}%</b> / <b class="text-emerald-300">${a.win20}%</b></div>`:""}
+        ${a.win10!=null?`<div class="mt-0.5 text-[11px]" style="color:var(--muted)">${t("pp_tiers")} <b class="fv-ok">${a.win10}%</b> / <b class="fv-ok">${a.win15}%</b> / <b class="fv-ok">${a.win20}%</b></div>`:""}
         <div class="font-semibold ${pnl>0?"text-emerald-300":(pnl<0?"text-rose-300":"text-slate-300")}">${money(pnl)}${a.avg_ret!=null?` <span class="text-[10px] text-slate-500 font-normal">${t("pp_avg")} ${pcx(a.avg_ret)}</span>`:""}</div>
       </div>`;
     }).join("");
