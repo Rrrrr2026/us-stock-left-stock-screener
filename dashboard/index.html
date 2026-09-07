@@ -1471,6 +1471,7 @@
     const m=document.getElementById("metaThemeColor"); if(!m) return;
     const v=getComputedStyle(document.body).getPropertyValue("--bg").trim(); if(v) m.content=v;
   }
+  syncThemeColor();   // 首屏就得同步一次: 否则白天模式下手机状态栏还挂着 <meta> 里那条深色静态值
   function redrawAfterTheme(){
     syncThemeColor();
     renderIndustryChart();
