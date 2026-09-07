@@ -229,7 +229,8 @@ def _simulate_signal(sig: dict, ser: dict, budget: float, lot: int) -> dict:
         snap_px = cand.get("price")
         if not snap_px or snap_px <= 0:
             return {"status": "bad_anchor"}
-        anchor = bt.find_anchor(ohlc[:, 3], idx0, float(snap_px))
+        # 锚定用原始价 (与快照价同口径), scale/模拟仍用同索引的 qfq —— 见 backtest.anchor_closes
+        anchor = bt.find_anchor(bt.anchor_closes(ser), idx0, float(snap_px))
         if anchor is None or anchor + 1 >= len(dates) or ohlc[anchor][3] <= 0:
             return res
         scale = float(ohlc[anchor][3]) / float(snap_px)
@@ -280,7 +281,8 @@ def update_portfolio() -> dict | None:
     if active:
         start = min(s["sig_date"] for s in active)
         start = (dt.date.fromisoformat(start) - dt.timedelta(days=FETCH_PAD_DAYS)).isoformat()
-        prices = bt.fetch_price_series(sorted({s["code"] for s in active}), start)
+        prices = bt.fetch_price_series(sorted({s["code"] for s in active}), start,
+                                       need_date=as_of)
 
     rows = []
     for s in state["signals"]:

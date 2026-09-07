@@ -184,7 +184,8 @@ def _sim_cycle(ser: dict, start_date: str, sig_px: float, stop_ref, budget: floa
         return {"status": "pending"}
     if not sig_px or sig_px <= 0:
         return {"status": "bad_anchor"}
-    anchor = bt.find_anchor(ohlcv[:, 3], idx0, float(sig_px))
+    # 锚定用原始价 (与快照价同口径), scale/模拟仍用同索引的 qfq —— 见 backtest.anchor_closes
+    anchor = bt.find_anchor(bt.anchor_closes(ser), idx0, float(sig_px))
     if anchor is None or anchor + 1 >= len(dates) or ohlcv[anchor][3] <= 0:
         return {"status": "pending"}
     scale = float(ohlcv[anchor][3]) / float(sig_px)
@@ -268,11 +269,14 @@ def update() -> dict | None:
     if codes:
         start = min(cy["start_date"] for cy in active)
         start = (dt.date.fromisoformat(start) - dt.timedelta(days=40)).isoformat()
-        fetched = bt.fetch_price_series(codes, start)
+        fetched = bt.fetch_price_series(codes, start, need_date=as_of)
         for code, ser in fetched.items():
             arr = np.asarray(ser["ohlc"], dtype=float)
-            prices[code] = {"dates": ser["dates"],
-                            "ohlcv": np.column_stack([arr, np.zeros(len(arr))])}
+            row = {"dates": ser["dates"],
+                   "ohlcv": np.column_stack([arr, np.zeros(len(arr))])}
+            if ser.get("raw_close") is not None:
+                row["raw_close"] = ser["raw_close"]   # 锚定要用它, 重排列时别弄丢
+            prices[code] = row
     for cy in active:
         eff_budget = budget * (cy.get("budget_scale") or 1.0)
         for p in cy["picks"]:

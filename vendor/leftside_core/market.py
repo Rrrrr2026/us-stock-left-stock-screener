@@ -29,7 +29,13 @@ class Market:
     growth_tier: dict = field(default_factory=dict)
     tier_label: dict = field(default_factory=dict)
     # 取数钩子
-    fetch_price_series: Optional[Callable[[list, str], dict]] = None    # (codes, start) -> {code: {dates, ohlc}}
+    # (codes, start[, need_date=]) -> {code: {dates, ohlc[, raw_close]}}
+    #   ohlc      = 前复权 (o,h,l,c); 收益/止损/目标一律算在它上面
+    #   raw_close = 可选, 与 ohlc 同索引的**原始收盘价**, 只用来锚定快照价 (backtest.anchor_closes);
+    #               不带这个键 = 退回"用前复权收盘锚定"的旧行为 (美股至今如此)
+    #   need_date = 可选关键字, "这批价格要重放到哪一天" (判本地库是否落后); 钩子签名里没有
+    #               这个参数时核心自动按两参调用, 所以老钩子不用改
+    fetch_price_series: Optional[Callable[..., dict]] = None
     fetch_benchmark: Optional[Callable[[], object]] = None              # () -> DataFrame(date, close)
     limit_up_oneline: Optional[Callable] = None                         # (o,h,l,c,prev_c) -> bool
     limit_down_oneline: Optional[Callable] = None

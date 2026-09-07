@@ -12,6 +12,13 @@
   * 锚定bar靠"快照价==该bar收盘价"匹配, 不信任快照标注的日期 —— 美股快照
     在北京时间早晨生成, 标注日与真实数据日差一个交易日, 直接按日期锚定会把
     "第二天的涨跌"泄漏进所有价位 (评审抓出的关键前视偏差);
+  * **锚定用原始价, 收益用前复权价** (2026-09-07): 快照价是当天的成交价(原始价),
+    而前复权序列的基准是"最新一天" —— 只要这只票在快照日之后除过权, 它那天的
+    qfq 价就不等于当天的成交价 (实测 08-26..09-07 有 73 只平移, 中位 0.89%,
+    最大 28.1%), 0.25% 的锚定容差被直接打穿。所以: 找"哪一根bar"用不会被未来
+    事件改写的 raw 收盘 (取价层多带一条 raw_close), 找到后一切价位/止损/目标/
+    收益仍在同索引的 qfq 序列上算 (跨除权只有 qfq 的涨跌幅是真涨跌幅)。
+    取不到 raw_close 的序列 (美股 / stock_detail 兜底 / v1 老库) 逐字退回旧行为;
   * 胜率只统计"观察窗完整走完"的信号 (fill后满 HORIZON 根bar)。已了结但窗口
     未满的样本一并剔除, 否则"快出结果的交易"会被优先计入, 胜率被截尾偏差推高;
   * 成交日回落破止损按止损位成交 (挂着的止损单), 不许按成交价记零损失;
@@ -26,6 +33,7 @@
 from __future__ import annotations
 import datetime as dt
 import glob
+import inspect
 import json
 import logging
 import os
@@ -142,16 +150,59 @@ def _series_from_stock_detail(codes: set[str]) -> dict:
     return out
 
 
-def fetch_price_series(codes: list[str], start: str) -> dict:
-    """委托给 Market.fetch_price_series (A股: 腾讯前复权; 美股: yfinance), 兜底 stock_detail。"""
+def _call_market_series(fn, codes: list[str], start: str, need_date: str | None) -> dict:
+    """调用 Market.fetch_price_series。
+
+    钩子的**老签名是 (codes, start)** (美股至今如此); A 股换成读价格库之后多接一个
+    `need_date` —— "这批价格最终要重放到哪一天", 用来判库是不是落后了。签名里没有这个
+    参数就按两参调用, 所以老钩子一行不用改。
+    (不用 try/TypeError 兜底: 钩子内部抛的 TypeError 会被误当成签名不匹配, 静默降级。)
+    """
+    if need_date:
+        try:
+            params = inspect.signature(fn).parameters
+            if "need_date" in params or any(p.kind == p.VAR_KEYWORD for p in params.values()):
+                return fn(codes, start, need_date=need_date) or {}
+        except (TypeError, ValueError):
+            pass
+    return fn(codes, start) or {}
+
+
+def fetch_price_series(codes: list[str], start: str, need_date: str | None = None) -> dict:
+    """委托给 Market.fetch_price_series (A股: 价格库直读, 缺的回落腾讯; 美股: yfinance),
+    兜底 stock_detail。
+
+    返回 {code: {"dates": [...], "ohlc": ndarray[N,4] 前复权(o,h,l,c),
+                 可选 "raw_close": ndarray[N] 原始收盘}}。
+    `need_date`: 调用方要重放到的最后一天 (回测=最新快照日, 模拟盘/双周=最新信号日)。
+    """
     fn = current().fetch_price_series
-    res = dict(fn(codes, start) or {}) if fn else {}
+    res = dict(_call_market_series(fn, codes, start, need_date)) if fn else {}
     missing = set(codes) - set(res)
     if missing:
         fb = _series_from_stock_detail(missing)
         res.update(fb)
         log.info("stock_detail 兜底补了 %d 只 (仍缺 %d)", len(fb), len(missing) - len(fb))
     return res
+
+
+def anchor_closes(ser: dict) -> np.ndarray:
+    """锚定该用哪条收盘价序列: 有原始价用原始价, 没有就退回前复权 (旧行为)。
+
+    为什么必须是原始价: 快照里的 price 是当天的成交价; 前复权序列的基准是"库内最新一天",
+    快照日之后的每一次除权都会把那天的 qfq 价整体平移, 拿它去比 0.25% 的容差必然错配
+    (实测 7,299 条样本: raw exact 97.5% vs qfq 92.9%, 其中 235 条锚到了不同的 bar)。
+    序列里 ohlc/ohlcv 的第 4 列 (index 3) 都是收盘。
+    """
+    raw = ser.get("raw_close")
+    if raw is not None:
+        raw = np.asarray(raw, dtype=float)
+        if raw.size and np.any(raw > 0):
+            return raw
+    arr = ser.get("ohlc")
+    if arr is None:
+        arr = ser.get("ohlcv")
+    return np.asarray(arr, dtype=float)[:, 3]
 
 
 # ===========================================================================
@@ -222,12 +273,16 @@ def _limit_down_oneline(o, h, l, c, prev_c):
 # ===========================================================================
 def find_anchor(closes: np.ndarray, idx0: int, snap_px: float) -> int | None:
     """从 idx0 (最后一根日期<=标注as_of的bar) 往前找收盘价与快照价吻合的bar。
-    优先取容差0.25%内最近的; 否则2%内最接近的; 都没有 -> 用 idx0 兜底。"""
+    优先取容差0.25%内最近的; 否则2%内最接近的; 都没有 -> 用 idx0 兜底。
+
+    `closes` 请用 `anchor_closes(ser)` 取 —— A 股走价格库时那是**原始收盘价**,
+    与快照价同口径; 其余市场仍是前复权收盘 (旧行为)。
+    """
     lo = max(0, idx0 - 6)
     best, best_d = None, 1e9
     for i in range(idx0, lo - 1, -1):
         cv = closes[i]
-        if cv <= 0:
+        if not (cv > 0):          # 含 NaN: raw_close 允许有缺口, 缺的那根直接跳过
             continue
         d = abs(cv / snap_px - 1.0)
         if d <= ANCHOR_TOL_EXACT:
@@ -394,8 +449,10 @@ def build_and_run(snaps: list[dict], prices: dict, rkeys=None, rmap=None) -> lis
             snap_px = c.get("price")
             if not snap_px or snap_px <= 0:
                 continue
-            # 锚定bar = 快照价真正来自的那根bar (防标注日错位泄漏次日行情)
-            anchor = find_anchor(ohlc[:, 3], idx0, float(snap_px))
+            # 锚定bar = 快照价真正来自的那根bar (防标注日错位泄漏次日行情)。
+            # 锚在原始价上找 (与快照价同口径), 但 scale 与后续模拟一律用 qfq 同索引值 ——
+            # 计划价位被 scale 搬进 qfq 空间, 跨除权的收益才对。
+            anchor = find_anchor(anchor_closes(ser), idx0, float(snap_px))
             if anchor is None or anchor + 1 >= len(dates):
                 continue
             if ohlc[anchor][3] <= 0:
@@ -685,7 +742,7 @@ def run_backtest(write_js: bool = True) -> dict | None:
     start = (dt.date.fromisoformat(snaps[0]["as_of"])
              - dt.timedelta(days=FETCH_START_PAD_DAYS)).isoformat()
     log.info("回测: %d 天快照, %d 只股票, 价格起点 %s", len(snaps), len(codes), start)
-    prices = fetch_price_series(codes, start)
+    prices = fetch_price_series(codes, start, need_date=snaps[-1]["as_of"])
     log.info("价格覆盖 %d/%d", len(prices), len(codes))
     bdf = _bench_frame()
     rkeys, rmap, bpx = regime_map(bdf)
