@@ -101,10 +101,19 @@ def _tier(c):
 #: **演示种子快照**: 仓库里随代码发布的一份合成快照 (让新克隆出来的仓库日期选择器不是空的),
 #: 候选是 `make_demo_data.py` 造的假票 —— 名字一律以"演示"开头, 价格是合成序列的值,
 #: 与真实行情毫无关系。前端照常给人看 (它就是演示用的), 但**任何按价格做的重放/锚定统计
-#: 都必须把它排除**: 它的假价格会在真代码的真 bar 上乱锚 (实测 11 条全部 fallback), 既拉低
-#: 命中率, 又会在 `build_and_run` 的"同一 (code, as_of) 先到先得"里抢走真快照的名额 ——
-#: 2026-09-08 把 day_2026-07-01.json 的 data_date 按价格证据改成 06-30 之后, 它正好和这份
-#: 种子快照撞成同一个 as_of, 而按文件名排序它排在前面, 不排除就会把 200 条真候选顶掉。
+#: 都必须把它排除**: 它的假价格会在真代码的真 bar 上乱锚 (实测 14 条全部锚不到 exact)。
+#:
+#: **它到底害在哪 —— 2026-09-08 实测重写, 旧说法是编的, 别再抄**: 首版这里写"与
+#: day_2026-07-01.json 撞 as_of, 按文件名排序在前, 会在 `build_and_run` 的'同一 (code, as_of)
+#: 先到先得'里把 200 条真候选顶掉"。**两处都不成立**: ① `build_and_run` 里压根没有按
+#: (code, as_of) 去重这回事, 拦截条件是 `code in busy_until and as_of <= busy_until[code]`,
+#: 那是一条**按代码**的事件冷却 (事件没走完就把 busy_until 置 9999-12-31), 与两份快照的
+#: as_of 撞不撞无关; ② 种子的 14 个代码与 07-01 那份的 200 个代码**交集为空**, 撞了也顶不掉
+#: 任何一条。真正的害处是**种子借用了真实存在的股票代码, 配上假名字假价格**: 把它放回样本
+#: 重跑 build_and_run 实测多出 **6 笔**纯由合成价造出来的假事件 (002666 / 002999 / 300222 /
+#: 300777 / 301010 / 600111 @ 2026-06-30), 而其中 600111 那笔假事件的冷却又**挡掉 1 笔真信号**
+#: (600111 @ 2026-07-07)。所以"排除"这件事是对的, 但量级是「6 笔假事件 + 1 笔真信号被挡」,
+#: 不是「200 条被顶掉」—— 差两个数量级, 而且错的理由曾被抄进三个仓库, 这条注释是纠正源。
 #: 判据 (满足其一): ① meta 里显式标了 demo/seed (以后新造种子请打这个标);
 #: ② 该市场的已知种子文件名白名单; ③ 兜底 —— 候选名全部以"演示"开头 (合成盘的签名,
 #: 真实 A 股没有这种名字, 美股是英文名, 都不会误伤)。**不删文件、不改文件**, 只在装载处跳过。
@@ -127,6 +136,55 @@ def is_demo_snapshot(path: str, meta: dict, cands: list) -> bool:
     return bool(cands) and all(str(c.get("name") or "").startswith("演示") for c in cands)
 
 
+#: **快照标注日修正表** (2026-09-08 GM 决定1)。两份历史快照自称的 `meta.data_date` 与它里面
+#: 的价格不是同一天, 按"价格证明的日期"改正 (逐值证据见 design/backtest_price_from_store.md §5)。
+#:
+#: **为什么修正必须写在代码里, 只改文件不够**: 回放/模拟盘读的是 `dashboard/history/`, 那是
+#: **运行时目录**, 在两个筛选器仓库里都被 .gitignore 掉; 服务器上它只由 run_a.sh 的
+#: `rsync -a --ignore-existing docs/history/ dashboard/history/` 回种, 而 `--ignore-existing`
+#: 的语义是"目标已存在就一个字节都不写" —— 这两份快照 2026-08-28 17:52 就已经躺在服务器上,
+#: 所以**改文件永远到不了生产** (2026-09-08 校验实证: 服务器 dashboard/history 里两份 meta
+#: 仍是 07-01 / 08-21, 且 `rsync -a dashboard/ .../stock-screener/docs/a/` 会把这份陈旧副本
+#: 发布到线上站, 与 GitHub Pages 那份修正过的 docs/ 长期不一致)。写成代码就跟着 git 走:
+#: 服务器每次跑之前 `git reset --hard origin/...`, 修正必然到位, 且哪天要撤销就是一次 revert。
+#:
+#: 语义 `{market: {文件名: (预期的错值, 应该是)}}` —— 只有当文件里的 `data_date` **正好等于
+#: 预期的错值**时才改; 已经在文件里修好的副本 (PC / GitHub Pages) 落到"应该是"那一支, 是
+#: no-op; 读到第三种值说明文件被别人动过, **不改并打 warning**, 不许静默按老规则套。
+SNAPSHOT_DATA_DATE_FIX = {
+    "ashare": {
+        # 整份存的是"昨收": 200 条里 184 条只命中 06-30 的原始收盘, 只命中 07-01 的 0 条
+        "day_2026-07-01.json": ("2026-07-01", "2026-06-30"),
+        # 周一跑却贴了上周五: 275 条里 271 条命中 08-24 的原始收盘, 只命中 08-21 的 0 条
+        "day_2026-08-24.json": ("2026-08-21", "2026-08-24"),
+    },
+    "us": {},
+}
+
+
+def corrected_data_date(path: str, as_of: str | None) -> tuple[str | None, str | None, bool]:
+    """按 `SNAPSHOT_DATA_DATE_FIX` 校正一份快照的标注日。
+
+    `as_of` 传已按 data_date -> run_date -> 文件名 兜底解析出来的标注日。
+    -> (要用的标注日, 说明或 None, 是否真的改了)。说明非空而"改了"为 False = 该报警的情况。
+    """
+    try:
+        tbl = SNAPSHOT_DATA_DATE_FIX.get(current().name) or {}
+    except Exception:                                    # Market 未注入 (纯离线自测)
+        tbl = {}
+    ent = tbl.get(os.path.basename(path))
+    if not ent:
+        return as_of, None, False
+    wrong, right = ent
+    if as_of == right:
+        return as_of, None, False                        # 文件本身已经是修正后的副本
+    if as_of == wrong:
+        return right, "%s: 标注日 %s -> %s (按价格证据修正, GM 决定1)" % (
+            os.path.basename(path), wrong, right), True
+    return as_of, ("%s: 标注日 %r 既不是已知错值 %r 也不是修正值 %r —— 文件被动过, "
+                   "本次不修正" % (os.path.basename(path), as_of, wrong, right)), False
+
+
 def load_snapshots() -> list[dict]:
     out = []
     for p in sorted(glob.glob(os.path.join(_paths()[0], "day_*.json"))):
@@ -142,9 +200,13 @@ def load_snapshots() -> list[dict]:
         if is_demo_snapshot(p, meta, cands):
             log.info("快照 %s 是演示种子 (合成价格), 不进回放样本", os.path.basename(p))
             continue
+        as_of = meta.get("data_date") or meta.get("run_date") or os.path.basename(p)[4:14]
+        as_of, note, applied = corrected_data_date(p, as_of)
+        if note:
+            (log.info if applied else log.warning)("快照标注日修正表: %s", note)
         out.append({
             "run_date": meta.get("run_date") or os.path.basename(p)[4:14],
-            "as_of": meta.get("data_date") or meta.get("run_date") or os.path.basename(p)[4:14],
+            "as_of": as_of,
             "opp_score": ((meta.get("opp") or {}).get("score")),
             "cands": cands,
         })
