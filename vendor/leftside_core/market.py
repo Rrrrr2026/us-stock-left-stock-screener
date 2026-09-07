@@ -39,6 +39,13 @@ class Market:
     fetch_bars_bulk: Optional[Callable[[list, str], dict]] = None       # (codes, start) -> {code: [(d,o,h,l,c,v),...]}
     fetch_index_bars: Optional[Callable[[str], list]] = None            # (start) -> [(d,o,h,l,c,v),...]
     universe_codes: Optional[Callable[[], list]] = None                 # () -> 全市场代码
+    # 按交易日拉全市场的钩子 (pricestore schema v2 增量; 只有 A 股 Tushare 路径实现)。
+    # 约定: 返回 None = "本路径未启用" (源开关不指向 Tushare / 无 token) -> pricestore 回退旧逐股增量;
+    #       返回 {} = "启用了但当日无数据" (非交易日/源未就绪)。这个区分是**故意**的, 别改成 {}。
+    fetch_bars_by_date: Optional[Callable[[str], dict]] = None          # (d) -> {code: (o,h,l,c,v,amt)} 原始价, v=股 amt=元
+    fetch_adj_by_date: Optional[Callable[[str], dict]] = None           # (d) -> {code: factor} 复权因子
+    trading_days: Optional[Callable[[str, str], list]] = None           # (start,end) -> ['YYYY-MM-DD',...] 开市日
+    fetch_universe_rows: Optional[Callable[[], list]] = None            # () -> [(code,name,list_date,delist_date,status)]
     log_prefix: str = "leftside_core"
 
 
