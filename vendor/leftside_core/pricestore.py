@@ -18,6 +18,8 @@ v2 (2026-09-07, Tushare 适配 P1) 改为 **原始价 + 复权因子落库, 前�
   idx_bars(d,o,h,l,c,v)            基准指数 (沪深300 / SPY), **v 为手**
   idx_multi(sym,d,o,h,l,c,v)       研究用多指数 (000001.SH/399001.SZ/...), v 为手
   universe(code,name,list_date,delist_date,status)   含退市股 (修幸存者偏差)
+                                   日期为 NULL = 源没给 (**绝不写 '1970-01-01' 哨兵**);
+                                   list_date 为 NULL 时 universe_at() 以首根 bar 代替
   meta(key,value)                  source / unit_v / unit_amt / rebase_date / max_trade_date
 
 **兼容性**: `bars` 的前 6 列与 v1 逐字相同 (`SELECT d,o,h,l,c,v` 照旧), `load()` 默认
@@ -93,6 +95,69 @@ def _upsert(conn: sqlite3.Connection, code: str, rows: list) -> None:
     conn.executemany(
         "INSERT OR REPLACE INTO bars(code,d,o,h,l,c,v) VALUES(?,?,?,?,?,?,?)",
         [(code, r[0], r[1], r[2], r[3], r[4], r[5]) for r in rows])
+
+
+# ------------------------------------------------------------------ 股票池日期规整
+
+#: 各数据源用来表示 "这个日期没有" 的哨兵值。**为什么要有这张表**: 老板买的 Tushare 兼容镜像
+#: 在 stock_basic 里把缺失的 list_date 返回成 epoch 0 的 '19700101' (2026-09-07 实测 4 只刚上市
+#: 的次新股), 而 '1970-01-01' 是个**合法日期字符串** —— 直接落库, `universe_at(任意历史日)` 就
+#: 会把 2026 年才上市的票算成 "1970 年就在市", 点时股票池被前视污染, 九年研究的分母全歪。
+#: 所以: 空/哨兵一律落 NULL, 让 "不知道" 就是 "不知道"; 怎么用 NULL 由 `universe_at` 决定。
+_NULL_DATE_TOKENS = {"", "-", "0", "00000000", "0000-00-00", "19700101", "1970-01-01",
+                     "none", "null", "nan", "nat", "nattype"}
+
+#: 点时股票池的进程内缓存 (库指纹 -> (universe 行, 首根 bar 表)), 见 `_pit_tables`。
+_PIT_CACHE: dict = {}
+
+
+def norm_date(v) -> str | None:
+    """任意来源的日期 -> 'YYYY-MM-DD'; 空值 / 哨兵 / 解析不出来的 -> **None** (落库即 NULL)。
+
+    接受 '20260907' / '2026-09-07' / '2026/09/07' / date / datetime / None / NaN / NaT。
+    1900 年以前一律判为哨兵 (A 股最早上市日是 1990-12-19, epoch 0 与 Excel 的 1899-12-30
+    都在这条线以下), 避免再冒出一个新的 "看起来像日期的空值"。
+    """
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s or s.lower() in _NULL_DATE_TOKENS:
+        return None
+    s = s[:10]
+    if len(s) == 10 and not s[4].isdigit():                  # 'YYYY-MM-DD' / 'YYYY/MM/DD'
+        s = s.replace("/", "-").replace(".", "-")
+    elif s.count("-") == 2 or s.count("/") == 2:             # 'YYYY-M-D' 之类
+        parts = s.replace("/", "-").split("-")
+        if len(parts) != 3 or not all(x.isdigit() for x in parts):
+            return None
+        s = f"{parts[0].zfill(4)}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
+    else:
+        digits = "".join(ch for ch in s if ch.isdigit())
+        if len(digits) < 8:
+            return None
+        s = f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"    # '20260907120000' 一类带时分秒的也认
+    if len(s) != 10 or s in _NULL_DATE_TOKENS or s < "1900-01-01":
+        return None
+    return s
+
+
+def normalize_universe_rows(rows) -> list:
+    """`fetch_universe_rows` 的产物 -> 可直接落 universe 表的行。
+
+    [(code, name, list_date, delist_date, status), ...] 同构返回, 但两个日期都过 `norm_date`
+    (空 -> None = NULL, **不是 '1970-01-01' 也不是 ''**), delist_date 有值就原样带上 (退市股
+    的出池日是幸存者偏差修正的另一半, 丢了等于没修)。没有 code 的行丢掉。
+    """
+    out = []
+    for r in rows or []:
+        r = list(r) + [None] * (5 - len(r))
+        code = str(r[0] or "").strip()
+        if not code:
+            continue
+        out.append((code, "" if r[1] is None else str(r[1]).strip(),
+                    norm_date(r[2]), norm_date(r[3]),
+                    str(r[4] or "").strip().upper()))
+    return out
 
 
 # ------------------------------------------------------------------ meta
@@ -216,21 +281,111 @@ def universe_rows(conn: sqlite3.Connection | None = None) -> list:
              "status": r[4]} for r in rows]
 
 
+def _db_fingerprint(conn: sqlite3.Connection) -> tuple:
+    """(主库路径, 主库 mtime/size, -wal mtime/size, 本连接改动数) —— 库一变缓存就失效。
+
+    WAL 下写入先落在 `-wal`, 所以两个文件都要看; `total_changes` 兜住 "同一个连接刚写完
+    又读" 的场景 (mtime 粒度可能吃掉毫秒级的先写后读)。内存库返回 () = 不缓存。
+    """
+    try:
+        path = ""
+        for _seq, name, f in conn.execute("PRAGMA database_list"):
+            if name == "main":
+                path = f or ""
+                break
+        if not path:
+            return ()
+        out = [path, conn.total_changes]
+    except sqlite3.Error:
+        return ()
+    for f in (path, path + "-wal"):
+        try:
+            st = os.stat(f)
+            out += [st.st_mtime_ns, st.st_size]
+        except OSError:
+            out += [0, 0]
+    return tuple(out)
+
+
+def _pit_tables(conn: sqlite3.Connection, refresh: bool = False) -> tuple:
+    """点时股票池要用的两张小表, 按库指纹缓存在进程内: (universe 行, 首根 bar 表)。
+
+    universe 行 = [(code, list_date|None, delist_date|None), ...], 日期一律过 `norm_date`
+    (老库里遗留的 '' / '1970-01-01' 哨兵在这里就被当成 "没有" 处理, 不必等重建)。
+    首根 bar 表 = {code: 库内最早的一根 bar 的日期}。九年重放会按天调 universe_at() 上千次,
+    每次都全表聚合一遍 9 百万行就是分钟级的浪费, 所以缓存; universe 为空 (美股库) 时直接
+    短路, 连聚合都不做。
+    """
+    key = _db_fingerprint(conn)
+    if key and not refresh and key in _PIT_CACHE:
+        return _PIT_CACHE[key]
+    uni = [(r[0], norm_date(r[1]), norm_date(r[2]))
+           for r in conn.execute("SELECT code, list_date, delist_date FROM universe")]
+    first: dict = {}
+    if uni:
+        first = {r[0]: r[1] for r in conn.execute(
+            "SELECT code, MIN(d) FROM bars_raw GROUP BY code") if r[1]}
+        if not first:                    # v1 老库 / 美股库没有 bars_raw
+            first = {r[0]: r[1] for r in conn.execute(
+                "SELECT code, MIN(d) FROM bars GROUP BY code") if r[1]}
+    val = (uni, first)
+    if key:
+        if len(_PIT_CACHE) > 3:
+            _PIT_CACHE.clear()
+        _PIT_CACHE[key] = val
+    return val
+
+
+def first_bar_dates(conn: sqlite3.Connection | None = None, refresh: bool = False) -> dict:
+    """{code: 库内第一根 bar 的日期} (universe 为空时返回 {})。进程内按库指纹缓存。"""
+    own = conn is None
+    conn = conn or _conn()
+    try:
+        return _pit_tables(conn, refresh)[1]
+    finally:
+        if own:
+            conn.close()
+
+
 def universe_at(date: str, conn: sqlite3.Connection | None = None) -> list:
-    """某日**在市**的代码 (list_date <= d < delist_date) —— 点时股票池, 修幸存者偏差用。
+    """某日**在市且买得到**的代码 —— 点时股票池, 修幸存者偏差用。
+
+    三条判据同时成立才入池:
+      · **退市**: delist_date 为空 (还在市) 或 > d —— 退市当日即出池;
+      · **上市**: list_date <= d。**list_date 为 NULL 时改用"库内第一根 bar"** ——
+        数据源对少数新股不给上市日 (镜像把它返回成 epoch 哨兵 19700101, 入库时已规整成
+        NULL, 见 `norm_date`); 没有上市日就绝不能当成 "1970 年就在市" (那会让 2016 年的
+        点时股票池混进 2026 年才上市的票 = 前视污染), 只能说 "从我们有第一根 bar 那天起
+        在市"。连一根 bar 都没有的 NULL 上市日代码不入池 —— 没有任何在市证据。
+      · **有价**: 该股在库里有 bar 时, 第一根 bar 必须 <= d。上市日早于 d 但首根 bar 晚于
+        d 的 (长期停牌后复牌、或上市早于库起点却直到 d 之后才恢复交易) 那天根本买不到,
+        进池只会虚增分母。
 
     universe 表为空 (美股库 / 尚未重建) 时返回 []; 调用方应据此决定是否退回 last_dates()。
     """
     own = conn is None
     conn = conn or _conn()
-    d = str(date)[:10]
-    rows = conn.execute(
-        "SELECT code FROM universe WHERE (list_date IS NULL OR list_date='' OR list_date<=?) "
-        "AND (delist_date IS NULL OR delist_date='' OR delist_date>?) ORDER BY code",
-        (d, d)).fetchall()
-    if own:
-        conn.close()
-    return [r[0] for r in rows]
+    try:
+        d = str(date)[:10]
+        uni, first = _pit_tables(conn)
+        out = []
+        for code, ld, dd in uni:
+            if dd and dd <= d:                      # 已退市
+                continue
+            fb = first.get(code)
+            if fb and fb > d:                       # 首根 bar 还没到 = 当日买不到
+                continue
+            if ld:
+                if ld > d:                          # 还没上市
+                    continue
+            elif not fb:                            # 没上市日又没 bar: 无从判断
+                continue
+            out.append(code)
+        out.sort()
+        return out
+    finally:
+        if own:
+            conn.close()
 
 
 # ------------------------------------------------------------------ 回填 / 增量
@@ -378,12 +533,15 @@ def _refresh_universe(m, conn: sqlite3.Connection) -> int:
     except Exception as e:                   # noqa: BLE001
         log.warning("universe 刷新失败 (保持原样): %s", str(e)[:120])
         return 0
+    rows = normalize_universe_rows(rows)
     if not rows:
         return 0
     conn.executemany("INSERT OR REPLACE INTO universe(code,name,list_date,delist_date,status) "
                      "VALUES(?,?,?,?,?)", rows)
     conn.commit()
-    log.info("universe 刷新: %d 只", len(rows))
+    _PIT_CACHE.clear()
+    n_null = sum(1 for r in rows if not r[2])
+    log.info("universe 刷新: %d 只 (其中 %d 只源未给上市日 -> NULL)", len(rows), n_null)
     return len(rows)
 
 
