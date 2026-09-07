@@ -1,186 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
 <meta charset="utf-8">
-<title>目标价全线在上</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>分析师目标 · FairValpha</title>
+<link rel="stylesheet" href="/shared/fv-shell.css?v=1">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&display=swap">
 <style>
-:root{
-  --bg:#eef2f8; --surface:#ffffff; --ink:#0f172a; --ink2:#334155; --muted:#64748b;
-  --line:#d7e0ee; --hair:#d7e0ee; --accent:#2962ff; --accent-ink:#0369a1;
-  --bar:#9ec5f4; --bar-strong:#2962ff; --good:#dc2626; --chipbg:#eaf0f8; --chip-on:rgba(41,98,255,.12);
-  --th:#eaf0f8;
-}
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]){
-    --bg:#131722; --surface:#1e222d; --ink:#d1d4dc; --ink2:#b2b5be; --muted:#787b86;
-    --line:#2a2e39; --hair:#2a2e39; --accent:#2962ff; --accent-ink:#38bdf8;
-    --bar:#1c5cab; --bar-strong:#2962ff; --good:#f87171; --chipbg:#2a2e39; --chip-on:rgba(41,98,255,.25);
-    --th:#1e222d;
-  }
-}
-:root[data-theme="dark"]{
-    --bg:#131722; --surface:#1e222d; --ink:#d1d4dc; --ink2:#b2b5be; --muted:#787b86;
-    --line:#2a2e39; --hair:#2a2e39; --accent:#2962ff; --accent-ink:#38bdf8;
-    --bar:#1c5cab; --bar-strong:#2962ff; --good:#f87171; --chipbg:#2a2e39; --chip-on:rgba(41,98,255,.25);
-    --th:#1e222d;
+/* 令牌全部来自 /shared/fv-shell.css (与两市工作台同名同值, 深海军蓝系)。
+   本页原有的 --surface/--ink/--ink2/--line/--hair/--th/--chipbg/--gold 已按
+   design/mobile_nav_spec.md §6 的映射迁移为 --card/--text/--dim/--border/--head/--input。
+   颜色铁律 (状态色 B 案): 评级这类"状态"一律实心药丸 (.fv-pill: 买入绿 / 卖出红 / 持有灰),
+   带方向的数字才用裸色 (--up 红 / --down 绿)。
+   被美股工作台 iframe 内嵌时, 父页仍会注入 #fvOverride 活体取色 (VMAP), 令牌同名同值 → 恒等。 */
+:root{ --bar:#1c5cab; --bar-strong:#2962ff; --chip-on:rgba(41,98,255,.25); }
+:root[data-theme="light"], body.light{ --bar:#9ec5f4; --bar-strong:#2962ff; --chip-on:rgba(41,98,255,.12); }
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]):not([data-theme="light"]){ --bar:#9ec5f4; --chip-on:rgba(41,98,255,.12); }
 }
 *{box-sizing:border-box}
-body{background:var(--bg); color:var(--ink); margin:0;
+body{background:var(--bg); color:var(--text); margin:0;
   font:14px/1.55 -apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",system-ui,sans-serif;}
 .mono{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
-.wrap{max-width:1240px; margin:0 auto; padding:28px 20px 60px;}
+.wrap{max-width:1240px; margin:0 auto; padding:20px 20px calc(60px + var(--sab));}
 header h1{font-size:26px; margin:0 0 6px; letter-spacing:.02em; text-wrap:balance;}
 header h1 .en{font-size:13px; font-weight:600; color:var(--accent-ink); letter-spacing:.14em; margin-left:10px;}
-.sub{color:var(--ink2); font-size:13px; margin:0;}
-.sub b{color:var(--ink); font-weight:600;}
+.toplinks{font-size:12px;margin:0 0 8px;color:var(--muted);}
+.toplinks a{color:inherit;}
+html.fv-shell-on .toplinks .backlink{display:none;}   /* 返回入口已由共享外壳接管 */
+.sub{color:var(--dim); font-size:13px; margin:0;}
+.sub b{color:var(--text); font-weight:600;}
 .meta{color:var(--muted); font-size:12px; margin-top:4px;}
 
-.tiles{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin:20px 0 14px;}
-.tile{background:var(--surface); border:1px solid var(--hair); border-radius:6px; padding:12px 14px;}
-.tile .k{font-size:12px; color:var(--ink2); letter-spacing:.05em;}
+.tiles{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin:18px 0 14px;}
+.tile{background:var(--card); border:1px solid var(--border); border-radius:6px; padding:12px 14px;}
+.tile .k{font-size:12px; color:var(--dim); letter-spacing:.05em;}
 .tile .v{font-size:24px; font-weight:600; margin-top:2px; font-variant-numeric:tabular-nums;}
 .tile .v small{font-size:13px; color:var(--muted); font-weight:400;}
 
-.panel{background:var(--surface); border:1px solid var(--hair); border-radius:6px; padding:14px 16px; margin-bottom:14px;}
+.panel{background:var(--card); border:1px solid var(--border); border-radius:6px; padding:14px 16px; margin-bottom:14px;}
 .filters{display:flex; flex-wrap:wrap; gap:14px 22px; align-items:flex-end;}
 .f{display:flex; flex-direction:column; gap:4px;}
-.f label{font-size:12px; color:var(--ink2); letter-spacing:.04em;}
+.f label{font-size:12px; color:var(--dim); letter-spacing:.04em;}
 .f input[type=number], .f input[type=search]{
-  background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:4px;
+  background:var(--input); color:var(--text); border:1px solid var(--inputborder); border-radius:4px;
   padding:6px 8px; font:inherit; font-variant-numeric:tabular-nums; width:110px;}
 .f input[type=search]{width:180px;}
 .f input:focus-visible{outline:2px solid var(--accent); outline-offset:1px;}
 .presets{display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; align-items:center;}
 .presets .lbl{font-size:12px; color:var(--muted);}
-button.chip{background:var(--chipbg); color:var(--ink2); border:1px solid var(--hair); border-radius:999px;
-  padding:4px 12px; font:12px/1.5 inherit; font-family:inherit; cursor:pointer;}
+button.chip{background:var(--input); color:var(--dim); border:1px solid var(--inputborder); border-radius:999px;
+  padding:5px 12px; font:12px/1.5 inherit; font-family:inherit; cursor:pointer;}
 button.chip:hover{border-color:var(--accent);}
-button.chip.on{background:var(--chip-on); color:var(--ink); border-color:var(--accent);}
+button.chip.on{background:var(--chip-on); color:var(--text); border-color:var(--accent);}
 button.chip:focus-visible{outline:2px solid var(--accent); outline-offset:1px;}
 .sectors{display:flex; flex-wrap:wrap; gap:6px; margin-top:12px;}
 .sec-note{font-size:12px; color:var(--muted); margin-top:8px;}
 
-.tablebox{background:var(--surface); border:1px solid var(--hair); border-radius:6px; overflow:auto; max-height:72vh;}
+.tablebox{background:var(--card); border:1px solid var(--border); border-radius:6px; overflow:auto; max-height:72vh;}
 table{border-collapse:collapse; width:100%; min-width:1060px; font-size:13px;}
-thead th{position:sticky; top:0; background:var(--th); color:var(--ink2); font-weight:600; font-size:12px;
-  text-align:right; padding:9px 10px; border-bottom:1px solid var(--line); cursor:pointer; user-select:none; white-space:nowrap; z-index:2;}
+thead th{position:sticky; top:0; background:var(--head); color:var(--dim); font-weight:600; font-size:12px;
+  text-align:right; padding:9px 10px; border-bottom:1px solid var(--border); cursor:pointer; user-select:none; white-space:nowrap; z-index:2;}
 thead th.l{text-align:left;}
-thead th:hover{color:var(--ink);}
+thead th:hover{color:var(--accent);}
 thead th .dir{color:var(--accent-ink); font-size:10px;}
-tbody td{padding:7px 10px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums;}
+tbody td{padding:7px 10px; border-bottom:1px solid var(--gridline); text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums;}
 tbody td.l{text-align:left;}
-tbody tr:hover{background:var(--chipbg);}
+tbody tr:hover{background:var(--rowhover);}
 td a{color:var(--accent-ink); text-decoration:none; font-weight:600;}
 td a:hover{text-decoration:underline;}
-td .co{color:var(--ink2); font-size:12px; max-width:210px; overflow:hidden; text-overflow:ellipsis; display:inline-block; vertical-align:bottom;}
+td .co{color:var(--dim); font-size:12px; max-width:210px; overflow:hidden; text-overflow:ellipsis; display:inline-block; vertical-align:bottom;}
 td .sec{color:var(--muted); font-size:12px;}
 .upcell{position:relative; min-width:120px;}
 .upbar{position:absolute; left:4px; top:6px; bottom:6px; background:var(--bar); border-radius:0 3px 3px 0; opacity:.45; z-index:0;}
 .upcell b{position:relative; z-index:1; font-weight:600;}
-.rate{font-size:12px; border:1px solid var(--hair); background:var(--chipbg); border-radius:3px; padding:1px 7px; color:var(--ink2);}
-.rate.sb{color:var(--good); border-color:var(--good); background:transparent;}
-.more{display:flex; gap:14px; align-items:center; justify-content:center; padding:12px; color:var(--ink2); font-size:13px;}
-.more button{background:none; border:1px solid var(--line); color:var(--accent-ink); border-radius:4px; padding:6px 14px; font:inherit; cursor:pointer;}
+.rate{font-size:11.5px;}                     /* 评级 = 状态 → .fv-pill 实心药丸 */
+.rate.sb{font-weight:700;}
+.more{display:flex; gap:14px; align-items:center; justify-content:center; padding:12px; color:var(--dim); font-size:13px;}
+.more button{background:none; border:1px solid var(--inputborder); color:var(--accent-ink); border-radius:4px; padding:6px 14px; font:inherit; cursor:pointer;}
 .more button:hover{border-color:var(--accent);}
 
 .export{margin-top:14px;}
 .export h2, .notes h2{font-size:15px; margin:0 0 8px;}
 .export .row{display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:8px;}
-.export textarea{width:100%; height:96px; background:var(--bg); color:var(--ink2); border:1px solid var(--line);
+.export textarea{width:100%; height:96px; background:var(--input); color:var(--dim); border:1px solid var(--inputborder);
   border-radius:4px; font:12px/1.5 "IBM Plex Mono",monospace; padding:8px; resize:vertical;}
 .export .hint{font-size:12px; color:var(--muted); margin-top:6px;}
-button.primary{background:var(--accent); color:#fff; border:none; border-radius:4px; padding:7px 16px; font:600 13px/1.5 inherit; font-family:inherit; cursor:pointer;}
+button.primary{background:var(--accent); color:#fff; border:none; border-radius:4px; padding:8px 16px; font:600 13px/1.5 inherit; font-family:inherit; cursor:pointer;}
 button.primary:hover{filter:brightness(1.08);}
-button.ghost{background:none; border:1px solid var(--line); color:var(--ink2); border-radius:4px; padding:6px 14px; font:inherit; cursor:pointer;}
-button.ghost:hover{border-color:var(--accent); color:var(--ink);}
-.copied{color:var(--good); font-size:12px;}
+button.ghost{background:none; border:1px solid var(--inputborder); color:var(--dim); border-radius:4px; padding:7px 14px; font:inherit; cursor:pointer;}
+button.ghost:hover{border-color:var(--accent); color:var(--text);}
+.copied{font-size:12px;}
 
-.notes{margin-top:18px; color:var(--ink2); font-size:13px;}
+.notes{margin-top:18px; color:var(--dim); font-size:13px;}
 .notes p{margin:6px 0; max-width:72em;}
 .notes .dim{color:var(--muted); font-size:12px;}
-@media (max-width:640px){ .wrap{padding:18px 10px 40px;} header h1{font-size:21px;} .f input[type=number]{width:88px;} }
+@media (max-width:640px){
+  .wrap{padding:14px 10px calc(48px + var(--sab));}
+  header h1{font-size:20px;}
+  .f input[type=number]{width:88px;} .f input[type=search]{width:100%;}
+  .f input[type=number], .f input[type=search]{font-size:16px;}   /* 防 iOS 聚焦缩放 */
+  .f{flex:1 1 132px;}
+  .tiles{grid-template-columns:repeat(auto-fit,minmax(132px,1fr));}
+  .tile .v{font-size:20px;}
+  button.chip{padding:7px 12px;}
+}
 @media (prefers-reduced-motion:no-preference){ .tile .v{transition:color .15s;} }
 </style>
+</head>
+<body>
+<script>window.FV_SHELL_CFG={page:"targets", from:"us", markets:false};</script>
+<script src="/shared/fv-shell.js?v=1"></script>
 
 <div class="wrap">
 <header>
-  <p style="font-size:12px;margin:0 0 6px;opacity:.75">FairValpha 工作台附属板块 · <a href="https://fairvalpha.com/us/" target="_top" style="color:inherit">← 返回美股工作台</a> · <a href="watchlist.txt" download style="color:inherit">下载 TradingView 自选列表</a></p>
-  <h1>目标价全线在上<span class="en mono">MIN &gt; PRICE</span></h1>
-  <p class="sub">美股中「分析师最低目标价也高于现价」的股票 —— Min 在现价之上，意味着 Min / Avg / Max 全部在上方。共 <b>__N_MATCH__</b> 只（全市场 __N_TOTAL__ 只有 ≥5 位分析师覆盖的股票中）。</p>
-  <p class="meta">价格为最近一个交易日收盘 · 数据抓取于 __FETCH_DATE__ · 来源：TradingView（与个股 Forecasts 页同源） · 目标价为一年期</p>
+  <p class="toplinks" id="toplinks"><span class="brandline">FairValpha</span>
+    <span class="backlink"> · <a href="https://fairvalpha.com/us/" target="_top">← 返回美股工作台</a></span>
+    · <a href="watchlist.txt" download id="wlLink">下载 TradingView 自选列表</a></p>
+  <h1><span id="h1t">目标价全线在上</span><span class="en mono">MIN &gt; PRICE</span></h1>
+  <p class="sub" id="subline">美股中「分析师最低目标价也高于现价」的股票 —— Min 在现价之上，意味着 Min / Avg / Max 全部在上方。共 <b>__N_MATCH__</b> 只（全市场 __N_TOTAL__ 只有 ≥5 位分析师覆盖的股票中）。</p>
+  <p class="meta" id="metaline">价格为最近一个交易日收盘 · 数据抓取于 __FETCH_DATE__ · 来源：TradingView（与个股 Forecasts 页同源） · 目标价为一年期</p>
 </header>
 
 <div class="tiles">
-  <div class="tile"><div class="k">当前命中</div><div class="v" id="t-count">–</div></div>
-  <div class="tile"><div class="k">Min 上行空间 · 中位</div><div class="v" id="t-min">–</div></div>
-  <div class="tile"><div class="k">Avg 上行空间 · 中位</div><div class="v" id="t-avg">–</div></div>
-  <div class="tile"><div class="k">分析师数 · 中位</div><div class="v" id="t-n">–</div></div>
-  <div class="tile"><div class="k">市值 ≥ 百亿美元</div><div class="v" id="t-big">–</div></div>
+  <div class="tile"><div class="k" data-i18n="t_count">当前命中</div><div class="v" id="t-count">–</div></div>
+  <div class="tile"><div class="k" data-i18n="t_min">Min 上行空间 · 中位</div><div class="v" id="t-min">–</div></div>
+  <div class="tile"><div class="k" data-i18n="t_avg">Avg 上行空间 · 中位</div><div class="v" id="t-avg">–</div></div>
+  <div class="tile"><div class="k" data-i18n="t_n">分析师数 · 中位</div><div class="v" id="t-n">–</div></div>
+  <div class="tile"><div class="k" data-i18n="t_big">市值 ≥ 百亿美元</div><div class="v" id="t-big">–</div></div>
 </div>
 
 <div class="panel">
   <div class="filters">
-    <div class="f"><label for="f-min">现价 → Min 空间 ≥ (%)</label><input id="f-min" type="number" min="0" step="1" value="0"></div>
-    <div class="f"><label for="f-avg">现价 → Avg 涨幅 ≥ (%)</label><input id="f-avg" type="number" min="0" step="1" value="0"></div>
-    <div class="f"><label for="f-n">分析师数 ≥</label><input id="f-n" type="number" min="5" step="1" value="5"></div>
-    <div class="f"><label for="f-cap">市值 ≥ (亿美元)</label><input id="f-cap" type="number" min="0" step="10" value="0"></div>
-    <div class="f"><label for="f-q">搜索代码 / 公司</label><input id="f-q" type="search" placeholder="如 NBIX"></div>
+    <div class="f"><label for="f-min" data-i18n="f_min">现价 → Min 空间 ≥ (%)</label><input id="f-min" type="number" min="0" step="1" value="0"></div>
+    <div class="f"><label for="f-avg" data-i18n="f_avg">现价 → Avg 涨幅 ≥ (%)</label><input id="f-avg" type="number" min="0" step="1" value="0"></div>
+    <div class="f"><label for="f-n" data-i18n="f_n">分析师数 ≥</label><input id="f-n" type="number" min="5" step="1" value="5"></div>
+    <div class="f"><label for="f-cap" data-i18n="f_cap">市值 ≥ (亿美元)</label><input id="f-cap" type="number" min="0" step="10" value="0"></div>
+    <div class="f"><label for="f-q" data-i18n="f_q">搜索代码 / 公司</label><input id="f-q" type="search" data-i18n-ph="f_q_ph" placeholder="如 NBIX"></div>
   </div>
   <div class="presets">
-    <span class="lbl">快捷条件：</span>
-    <button class="chip" data-preset="reset">全部（重置）</button>
-    <button class="chip" data-preset="steady">稳健 · Min≥5% 分析师≥10 市值≥100亿</button>
-    <button class="chip" data-preset="aggr">进取 · Min≥20% 分析师≥8</button>
+    <span class="lbl" data-i18n="presets_lbl">快捷条件：</span>
+    <button class="chip" data-preset="reset" data-i18n="pre_reset">全部（重置）</button>
+    <button class="chip" data-preset="steady" data-i18n="pre_steady">稳健 · Min≥5% 分析师≥10 市值≥100亿</button>
+    <button class="chip" data-preset="aggr" data-i18n="pre_aggr">进取 · Min≥20% 分析师≥8</button>
   </div>
   <div class="sectors" id="sectors"></div>
-  <div class="sec-note">点板块可多选；再点取消。不选 = 全部板块。</div>
+  <div class="sec-note" data-i18n="sec_note">点板块可多选；再点取消。不选 = 全部板块。</div>
 </div>
 
 <div class="tablebox">
   <table id="tbl">
     <thead><tr>
-      <th class="l" data-k="sym">代码</th>
-      <th class="l" data-k="name">公司 / 板块</th>
-      <th data-k="close">现价$</th>
-      <th data-k="tlow">Min目标</th>
-      <th data-k="tavg">Avg目标</th>
-      <th data-k="thigh">Max目标</th>
-      <th data-k="upmin">Min空间</th>
-      <th data-k="upavg">Avg空间</th>
-      <th data-k="upmax">Max空间</th>
-      <th data-k="n">分析师</th>
-      <th data-k="rate">评级</th>
-      <th data-k="cap">市值</th>
+      <th class="l" data-k="sym" data-i18n="th_sym">代码</th>
+      <th class="l" data-k="name" data-i18n="th_name">公司 / 板块</th>
+      <th data-k="close" data-i18n="th_close">现价$</th>
+      <th data-k="tlow" data-i18n="th_tlow">Min目标</th>
+      <th data-k="tavg" data-i18n="th_tavg">Avg目标</th>
+      <th data-k="thigh" data-i18n="th_thigh">Max目标</th>
+      <th data-k="upmin" data-i18n="th_upmin">Min空间</th>
+      <th data-k="upavg" data-i18n="th_upavg">Avg空间</th>
+      <th data-k="upmax" data-i18n="th_upmax">Max空间</th>
+      <th data-k="n" data-i18n="th_n">分析师</th>
+      <th data-k="rate" data-i18n="th_rate">评级</th>
+      <th data-k="cap" data-i18n="th_cap">市值</th>
     </tr></thead>
     <tbody id="tb"></tbody>
   </table>
-  <div class="more" id="more" hidden><span id="more-txt"></span><button id="more-btn">显示全部</button></div>
+  <div class="more" id="more" hidden><span id="more-txt"></span><button id="more-btn" data-i18n="more_btn">显示全部</button></div>
 </div>
 
 <div class="panel export">
-  <h2>导出为 TradingView 自选板块</h2>
+  <h2 data-i18n="ex_h">导出为 TradingView 自选板块</h2>
   <div class="row">
-    <button class="primary" id="gen">生成导入文本（当前筛选 <span id="gen-n">0</span> 只）</button>
-    <button class="ghost" id="copy" hidden>复制</button>
-    <span class="copied" id="copied" hidden>已复制 ✓</span>
+    <button class="primary" id="gen"></button>
+    <button class="ghost" id="copy" hidden data-i18n="ex_copy">复制</button>
+    <span class="copied fv-pill pass" id="copied" hidden></span>
   </div>
   <textarea id="out" class="mono" hidden readonly spellcheck="false"></textarea>
-  <p class="hint">用法：复制后粘贴到本地新建的 .txt 文件 → TradingView 右侧自选列表菜单 →「导入列表…」选择该文件，即得到一个独立板块（按行业分组）。列表过长可能受账户方案的符号数量上限限制，建议先收紧条件。</p>
+  <p class="hint" data-i18n="ex_hint">用法：复制后粘贴到本地新建的 .txt 文件 → TradingView 右侧自选列表菜单 →「导入列表…」选择该文件，即得到一个独立板块（按行业分组）。列表过长可能受账户方案的符号数量上限限制，建议先收紧条件。</p>
 </div>
 
 <div class="notes">
-  <h2>说明</h2>
-  <p>筛选条件：NASDAQ / NYSE / AMEX 主要上市的普通股与 ADR（美元计价，不含 OTC）；给出评级的分析师 ≥ 5 位；分析师最低一年期目标价严格高于最新收盘价。</p>
-  <p>「分析师数」为给出<b>评级</b>的人数，与给出<b>目标价</b>的人数可能略有出入（如 NBIX：30 位评级、27 位给目标价）。评级由 TradingView 的均值映射：≤1.5 强烈买入、≤2.5 买入。</p>
-  <p class="dim">分析师目标价整体偏乐观（本条件命中约占有覆盖股票的一半），低价小盘股常因个别极端目标价而空间排名靠前，参考需谨慎。数据为静态快照，不随行情自动更新；如需刷新可再让 Claude 重跑一次。本页不构成投资建议。</p>
+  <h2 data-i18n="n_h">说明</h2>
+  <p data-i18n="n_1">筛选条件：NASDAQ / NYSE / AMEX 主要上市的普通股与 ADR（美元计价，不含 OTC）；给出评级的分析师 ≥ 5 位；分析师最低一年期目标价严格高于最新收盘价。</p>
+  <p data-i18n-html="n_2">「分析师数」为给出<b>评级</b>的人数，与给出<b>目标价</b>的人数可能略有出入（如 NBIX：30 位评级、27 位给目标价）。评级由 TradingView 的均值映射：≤1.5 强烈买入、≤2.5 买入。</p>
+  <p class="dim" data-i18n="n_3">分析师目标价整体偏乐观（本条件命中约占有覆盖股票的一半），低价小盘股常因个别极端目标价而空间排名靠前，参考需谨慎。数据为静态快照，不随行情自动更新。本页不构成投资建议。</p>
 </div>
 </div>
 
 <script>
 /*__DATA__*/
+const BUILD = { n:"__N_MATCH__", tot:"__N_TOTAL__", date:"__FETCH_DATE__" };
+
+/* 外壳缺失时退化为纯中文, 页面照常可用 */
+const FV = window.fvShell || { lang:"zh", applyI18n(){}, onLang(){}, onTheme(){} };
+
+const T = {
+ zh:{
+  page_title:"分析师目标", h1:"目标价全线在上",
+  backlink:"← 返回美股工作台", wl:"下载 TradingView 自选列表",
+  sub:"美股中「分析师最低目标价也高于现价」的股票 —— Min 在现价之上，意味着 Min / Avg / Max 全部在上方。共 <b>{n}</b> 只（全市场 {tot} 只有 ≥5 位分析师覆盖的股票中）。",
+  meta:"价格为最近一个交易日收盘 · 数据抓取于 {date} · 来源：TradingView（与个股 Forecasts 页同源） · 目标价为一年期",
+  t_count:"当前命中", t_min:"Min 上行空间 · 中位", t_avg:"Avg 上行空间 · 中位",
+  t_n:"分析师数 · 中位", t_big:"市值 ≥ 百亿美元",
+  f_min:"现价 → Min 空间 ≥ (%)", f_avg:"现价 → Avg 涨幅 ≥ (%)", f_n:"分析师数 ≥",
+  f_cap:"市值 ≥ (亿美元)", f_q:"搜索代码 / 公司", f_q_ph:"如 NBIX",
+  presets_lbl:"快捷条件：", pre_reset:"全部（重置）",
+  pre_steady:"稳健 · Min≥5% 分析师≥10 市值≥100亿", pre_aggr:"进取 · Min≥20% 分析师≥8",
+  sec_note:"点板块可多选；再点取消。不选 = 全部板块。",
+  th_sym:"代码", th_name:"公司 / 板块", th_close:"现价$", th_tlow:"Min目标", th_tavg:"Avg目标",
+  th_thigh:"Max目标", th_upmin:"Min空间", th_upavg:"Avg空间", th_upmax:"Max空间",
+  th_n:"分析师", th_rate:"评级", th_cap:"市值",
+  more_txt:"已显示前 {shown} 条，还有 {rest} 条", more_btn:"显示全部",
+  ex_h:"导出为 TradingView 自选板块", ex_gen:"生成导入文本（当前筛选 {n} 只）",
+  ex_copy:"复制", ex_ok:"已复制 ✓", ex_manual:"已全选，请按 Ctrl/Cmd+C 复制",
+  ex_hint:"用法：复制后粘贴到本地新建的 .txt 文件 → TradingView 右侧自选列表菜单 →「导入列表…」选择该文件，即得到一个独立板块（按行业分组）。列表过长可能受账户方案的符号数量上限限制，建议先收紧条件。",
+  n_h:"说明",
+  n_1:"筛选条件：NASDAQ / NYSE / AMEX 主要上市的普通股与 ADR（美元计价，不含 OTC）；给出评级的分析师 ≥ 5 位；分析师最低一年期目标价严格高于最新收盘价。",
+  n_2:"「分析师数」为给出<b>评级</b>的人数，与给出<b>目标价</b>的人数可能略有出入（如 NBIX：30 位评级、27 位给目标价）。评级由 TradingView 的均值映射：≤1.5 强烈买入、≤2.5 买入。",
+  n_3:"分析师目标价整体偏乐观（本条件命中约占有覆盖股票的一半），低价小盘股常因个别极端目标价而空间排名靠前，参考需谨慎。数据为静态快照，不随行情自动更新。本页不构成投资建议。",
+  r_sb:"强烈买入", r_b:"买入", r_h:"持有", r_s:"卖出",
+  r_tip:"强烈买入{sb} · 买入{b} · 持有{h} · 卖出{s} · 强烈卖出{ss}（均值{m}）",
+  tv_tip:"在 TradingView 打开 Forecast 页", unit_n:"位", unit_names:"只"
+ },
+ en:{
+  page_title:"Analyst Targets", h1:"Every target above the price",
+  backlink:"← Back to US desk", wl:"Download TradingView watchlist",
+  sub:"US stocks whose <b>lowest</b> analyst target still sits above the current price — Min above price means Min / Avg / Max are all above it. <b>{n}</b> names (out of {tot} covered by ≥5 analysts).",
+  meta:"Prices are the latest close · fetched {date} · source: TradingView (same feed as each stock's Forecasts tab) · targets are one-year",
+  t_count:"Matches", t_min:"Min upside · median", t_avg:"Avg upside · median",
+  t_n:"Analysts · median", t_big:"Market cap ≥ $10B",
+  f_min:"Price → Min upside ≥ (%)", f_avg:"Price → Avg upside ≥ (%)", f_n:"Analysts ≥",
+  f_cap:"Market cap ≥ ($100M)", f_q:"Search symbol / company", f_q_ph:"e.g. NBIX",
+  presets_lbl:"Quick filters:", pre_reset:"All (reset)",
+  pre_steady:"Steady · Min≥5%, ≥10 analysts, cap ≥$10B", pre_aggr:"Aggressive · Min≥20%, ≥8 analysts",
+  sec_note:"Click sectors to multi-select; click again to clear. None selected = all sectors.",
+  th_sym:"Symbol", th_name:"Company / sector", th_close:"Price $", th_tlow:"Min target", th_tavg:"Avg target",
+  th_thigh:"Max target", th_upmin:"Min upside", th_upavg:"Avg upside", th_upmax:"Max upside",
+  th_n:"Analysts", th_rate:"Rating", th_cap:"Mkt cap",
+  more_txt:"Showing the first {shown}, {rest} more", more_btn:"Show all",
+  ex_h:"Export as a TradingView watchlist", ex_gen:"Generate import text ({n} filtered)",
+  ex_copy:"Copy", ex_ok:"Copied ✓", ex_manual:"Selected — press Ctrl/Cmd+C to copy",
+  ex_hint:"How to use: paste into a new local .txt file → TradingView watchlist menu on the right → “Import list…” and pick that file; you get a standalone list grouped by sector. Very long lists may hit your plan's symbol cap, so tighten the filters first.",
+  n_h:"Notes",
+  n_1:"Screen: common stocks and ADRs with a primary listing on NASDAQ / NYSE / AMEX (USD, no OTC); at least 5 analysts with a rating; the lowest one-year analyst target is strictly above the latest close.",
+  n_2:"“Analysts” counts those who published a <b>rating</b>, which can differ slightly from those who published a <b>target</b> (NBIX: 30 ratings, 27 targets). The rating maps TradingView's mean: ≤1.5 strong buy, ≤2.5 buy.",
+  n_3:"Analyst targets skew optimistic (about half of all covered stocks pass this screen), and cheap small caps often top the upside ranking because of a single extreme target — read with care. The data is a static snapshot and does not update with the market. This page is not investment advice.",
+  r_sb:"Strong buy", r_b:"Buy", r_h:"Hold", r_s:"Sell",
+  r_tip:"Strong buy {sb} · Buy {b} · Hold {h} · Sell {s} · Strong sell {ss} (mean {m})",
+  tv_tip:"Open the Forecast page on TradingView", unit_n:"", unit_names:""
+ }
+};
+function t(k,vars){
+  let s=(T[FV.lang]||T.zh)[k]; if(s==null) s=T.zh[k]; if(s==null) return k;
+  if(vars) for(const v in vars) s=s.split("{"+v+"}").join(vars[v]);
+  return s;
+}
+
 const $ = id => document.getElementById(id);
 const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
 const fmt$ = v => v>=1000 ? v.toFixed(0) : v>=1 ? v.toFixed(2) : v.toFixed(3);
 const fmtPct = v => '+' + v.toFixed(1) + '%';
-const fmtCap = b => { const yi = b*10; return yi >= 10000 ? (yi/10000).toFixed(2)+'万亿' : yi >= 10 ? yi.toFixed(0)+'亿' : yi.toFixed(1)+'亿'; };
+const fmtCap = b => {
+  if(FV.lang==="en") return b>=1000 ? '$'+(b/1000).toFixed(2)+'T' : b>=10 ? '$'+b.toFixed(0)+'B' : '$'+b.toFixed(1)+'B';
+  const yi = b*10; return yi >= 10000 ? (yi/10000).toFixed(2)+'万亿' : yi >= 10 ? yi.toFixed(0)+'亿' : yi.toFixed(1)+'亿';
+};
 const median = a => { if(!a.length) return null; const s=[...a].sort((x,y)=>x-y), m=s.length>>1; return s.length%2 ? s[m] : (s[m-1]+s[m])/2; };
 
 // rows: [sym,name,secIdx,close,tlow,tavg,thigh,tmed,mark,ntotal,nsb,nb,nh,ns,nss,mcapB]
@@ -216,11 +300,13 @@ function sorted(list){
   const get = r => k==='sym' ? r.tick : k==='name' ? r.name : k==='rate' ? r.mark : k==='n' ? r.n : r[k];
   return [...list].sort((a,b) => { const x=get(a), y=get(b); return (x<y?-1:x>y?1:0)*d; });
 }
+/* 评级 = 状态 → 实心药丸 (买入绿 / 持有灰 / 卖出红), 与裸色的涨跌数字分工明确 */
 function rating(r){
   const sb = r.mark <= 1.5;
-  const t = sb ? '强烈买入' : r.mark <= 2.5 ? '买入' : r.mark <= 3.5 ? '持有' : '卖出';
-  const tip = `强烈买入${r.nsb} · 买入${r.nb} · 持有${r.nh} · 卖出${r.ns} · 强烈卖出${r.nss}（均值${r.mark}）`;
-  return `<span class="rate${sb?' sb':''}" title="${tip}">${t}</span>`;
+  const txt = sb ? t('r_sb') : r.mark <= 2.5 ? t('r_b') : r.mark <= 3.5 ? t('r_h') : t('r_s');
+  const cl  = r.mark <= 2.5 ? 'pass' : r.mark <= 3.5 ? 'mute' : 'fail';
+  const tip = t('r_tip', {sb:r.nsb, b:r.nb, h:r.nh, s:r.ns, ss:r.nss, m:r.mark});
+  return `<span class="fv-pill ${cl} rate${sb?' sb':''}" title="${esc(tip)}">${txt}</span>`;
 }
 function render(list){
   const rows = state.showAll ? list : list.slice(0, CAP_ROWS);
@@ -229,7 +315,7 @@ function render(list){
     const url = 'https://www.tradingview.com/symbols/' + r.sym.replace(':','-') + '/forecast/';
     const w = Math.min(r.upmin, maxUp) / maxUp * 112;
     return `<tr>
-      <td class="l mono"><a href="${url}" target="_blank" rel="noopener" title="在 TradingView 打开 Forecast 页">${r.tick}</a></td>
+      <td class="l mono"><a href="${url}" target="_blank" rel="noopener" title="${esc(t('tv_tip'))}">${r.tick}</a></td>
       <td class="l"><span class="co" title="${esc(r.name)}">${esc(r.name)}</span><br><span class="sec">${DATA.sectors[r.sec]}</span></td>
       <td class="mono">${fmt$(r.close)}</td>
       <td class="mono">${fmt$(r.tlow)}</td>
@@ -245,23 +331,33 @@ function render(list){
   }).join('');
   const hidden = list.length - rows.length;
   $('more').hidden = hidden <= 0;
-  if(hidden > 0){ $('more-txt').textContent = `已显示前 ${rows.length} 条，还有 ${hidden} 条`; }
+  if(hidden > 0){ $('more-txt').textContent = t('more_txt', {shown:rows.length, rest:hidden}); }
 }
 function refresh(){
   const list = sorted(filtered());
   $('t-count').innerHTML = list.length + '<small> / ' + R.length + '</small>';
   $('t-min').textContent = list.length ? fmtPct(median(list.map(r=>r.upmin))) : '–';
   $('t-avg').textContent = list.length ? fmtPct(median(list.map(r=>r.upavg))) : '–';
-  $('t-n').textContent = list.length ? Math.round(median(list.map(r=>r.n))) + ' 位' : '–';
-  $('t-big').textContent = list.filter(r=>r.cap>=10).length + ' 只';
-  $('gen-n').textContent = list.length;
+  $('t-n').textContent = list.length ? Math.round(median(list.map(r=>r.n))) + ' ' + t('unit_n') : '–';
+  $('t-big').textContent = list.filter(r=>r.cap>=10).length + ' ' + t('unit_names');
+  $('gen').textContent = t('ex_gen', {n:list.length});
   document.querySelectorAll('thead th').forEach(th => {
     const on = th.dataset.k === state.sortK;
-    th.innerHTML = th.textContent.replace(/[▲▼]\s*$/,'') + (on ? ` <span class="dir">${state.sortD<0?'▼':'▲'}</span>` : '');
+    th.innerHTML = t(th.dataset.i18n) + (on ? ` <span class="dir">${state.sortD<0?'▼':'▲'}</span>` : '');
   });
   render(list);
   $('out').hidden = true; $('copy').hidden = true; $('copied').hidden = true;
   window.__cur = list;
+}
+function applyLang(){
+  FV.applyI18n(T);
+  document.title = t('page_title') + ' · FairValpha';
+  $('h1t').textContent = t('h1');
+  $('subline').innerHTML = t('sub', {n:BUILD.n, tot:BUILD.tot});
+  $('metaline').textContent = t('meta', {date:BUILD.date});
+  $('toplinks').querySelector('.backlink a').textContent = t('backlink');
+  $('wlLink').textContent = t('wl');
+  refresh();
 }
 // filter inputs
 [['f-min','min'],['f-avg','avg'],['f-n','n'],['f-cap','cap']].forEach(([id,k]) => {
@@ -300,8 +396,13 @@ $('copy').onclick = async () => {
   let ok = false;
   try { await navigator.clipboard.writeText(ta.value); ok = true; }
   catch(e){ ta.focus(); ta.select(); try { ok = document.execCommand('copy'); } catch(e2){ ok = false; } }
-  $('copied').textContent = ok ? '已复制 ✓' : '已全选，请按 Ctrl/Cmd+C 复制';
-  $('copied').hidden = false;
+  const el = $('copied');
+  el.textContent = ok ? t('ex_ok') : t('ex_manual');
+  el.className = 'copied fv-pill ' + (ok ? 'pass' : 'warn');
+  el.hidden = false;
 };
-refresh();
+FV.onLang(applyLang);
+applyLang();
 </script>
+</body>
+</html>

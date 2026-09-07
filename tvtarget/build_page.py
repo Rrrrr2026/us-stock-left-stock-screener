@@ -18,14 +18,14 @@ OUT_DIR = BASE / "output"
 
 
 def main() -> None:
-    data = json.load(open(DATA))
+    data = json.load(open(DATA, encoding="utf-8"))
     rows = data["rows"]
     fetched = datetime.datetime.fromisoformat(data["fetchedAt"].replace("Z", "+00:00"))
 
     payload = json.dumps({"sectors": data["sectors"], "rows": rows},
                          ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
 
-    html = open(TEMPLATE).read()
+    html = open(TEMPLATE, encoding="utf-8").read()
     assert "/*__DATA__*/" in html
     html = (html
             .replace("/*__DATA__*/", "const DATA=" + payload + ";")
@@ -34,7 +34,7 @@ def main() -> None:
             .replace("__FETCH_DATE__", fetched.strftime("%Y-%m-%d %H:%M UTC")))
 
     OUT_DIR.mkdir(exist_ok=True)
-    open(OUT_DIR / "index.html", "w").write(html)
+    open(OUT_DIR / "index.html", "w", encoding="utf-8").write(html)
 
     # watchlist：###板块名 分组，组内按市值降序（rows 本身已按市值排序）
     by_sec = defaultdict(list)
@@ -44,7 +44,7 @@ def main() -> None:
     for sec in sorted(by_sec, key=lambda s: -len(by_sec[s])):
         parts.append("###" + sec.upper().replace(",", " "))
         parts.extend(by_sec[sec])
-    open(OUT_DIR / "watchlist.txt", "w").write(",".join(parts))
+    open(OUT_DIR / "watchlist.txt", "w", encoding="utf-8").write(",".join(parts))
 
     print(f"✓ output/index.html（{len(rows)} 只） + output/watchlist.txt")
 
