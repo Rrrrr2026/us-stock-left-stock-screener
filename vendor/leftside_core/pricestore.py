@@ -47,6 +47,7 @@ STALE_DAYS_FULL = 3650      # backfill: 完全没有该股才算缺
 BATCH = 400                 # 每批写库/打日志的代码数
 MIN_BARS = 60               # load(): 少于这么多根的代码不返回 (与 v1 一致)
 MAT_BATCH = 300             # 物化 qfq 时每多少只提交一次
+PENDING_MAT_KEY = "_pending_materialize"   # 崩溃面包屑: 待整段重物化的代码 (逗号分隔)
 
 ADJUSTS = ("qfq", "hfq", "raw")
 
@@ -452,6 +453,30 @@ def update_daily(codes: list | None = None, lookback_days: int = 150) -> int:
     return _update_daily_legacy(m, codes, lookback_days)
 
 
+def _resume_pending_materialize(conn: sqlite3.Connection) -> int:
+    """上一次按日增量崩在 materialize 之前/之中留下的面包屑, 开门先补上。-> 补了几只。
+
+    见 `_update_daily_by_date` 的「崩溃续跑到底保证到哪」。materialize 幂等 (整段 DELETE
+    再重写), 重复跑没有副作用; 面包屑删干净才算修完, 所以删和 materialize 之间再 commit 一次
+    (中间又崩就是原样重来)。"""
+    row = conn.execute("SELECT value FROM meta WHERE key=?", (PENDING_MAT_KEY,)).fetchone()
+    if row is None:
+        return 0
+    codes = sorted({c for c in str(row[0] or "").split(",") if c})
+    if not codes:                            # 空值 = 上次已经物化完只是没删干净
+        conn.execute("DELETE FROM meta WHERE key=?", (PENDING_MAT_KEY,))
+        conn.commit()
+        return 0
+    log.warning("价格库增量: 上一次有 %d 只票没来得及整段重物化 (进程被中断?) "
+                "—— 先把它们补回来再往下走 (%s%s)", len(codes), ",".join(codes[:5]),
+                "…" if len(codes) > 5 else "")
+    n = materialize(codes, conn)             # 内含 commit
+    conn.execute("DELETE FROM meta WHERE key=?", (PENDING_MAT_KEY,))
+    conn.commit()
+    log.info("价格库增量: 续跑重物化 %d 只完成, 面包屑已清", n)
+    return n
+
+
 def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9,
                           max_total_days: int = 250) -> int | None:
     """按 trade_date 增量, **最早优先分块追平**。-> 写入的 bar 数;
@@ -461,7 +486,21 @@ def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9,
     交易日的**最后** 40 天。副本落后 65 天时那一跑会写最新 40 天, `MAX(d)` 一步越到末日,
     而中间那 25 天从此再也进不来: 下一次 `last = MAX(bars_raw.d)` 已经是末日, `days` 里
     根本不会再出现它们。一个静默的洞, 越补越像补好了。现在改成 `days[:max_days]` 一块块
-    从最早的补, 循环到追平或撞守卫为止, 每块提交 (中途崩了下次从洞口续)。
+    从最早的补, 循环到追平或撞守卫为止, 每块提交一次。
+
+    **崩溃续跑到底保证到哪** (2026-09-08 复验补; 之前这里写的是一句更强的"中途崩了下次从
+    洞口续", 对下面这类票不成立): 块内每天写完 bars_raw/adj 就 commit, 但**因子变了的票
+    (除权除息 / 新股 / 缺因子) 只进 `changed` 集合, 要等本块末尾的 materialize 才落 bars**。
+    进程若正好在这中间被 kill (OOM / 断电 / 手工 Ctrl-C), bars_raw 与 `meta.max_trade_date`
+    已经推进到崩溃那天, 这些票的 `bars` 却缺了那几天; 而下一次的起点 `last = MAX(bars_raw.d)`
+    已经越过去了, 靠日更本身永远补不回, 残存的 bars 还停在除权前的旧基准 (前复权口径静默变错)
+    —— 与本函数修掉的那个洞是同一类失败, 只是发生在 bars_raw 与 bars 之间。
+    所以这里落一个**面包屑**: 待重物化的代码表跟当天那一笔写在**同一个事务**里
+    (`meta[_pending_materialize]`), materialize 成功才删。下一次按日增量一开门先看它, 有就先
+    把这些票整段重物化再往下走 (materialize 幂等: 整段 DELETE 再重写, 重跑无副作用)。
+    局限也说清楚: 修复靠的是"下次还会跑按日增量"。崩溃后若改跑别的路径 (逐股回看 / 只读分析
+    / 直接读库出信号), 那几天的 bars 仍是缺的 —— 但面包屑还留在 meta 里, `server/
+    pricestore_fingerprint.sql` 会把它照成多出来的一行, 别把它当"两份库不一致"。
 
     **未就绪守卫** (设计 §4 风险条, 2026-09-07 换库时下沉到这里): 某个交易日返回的行数
     < 在市股数 × ready_ratio 就判"源当天还没入库", **就地停下**并沿用昨日库 —— 不是跳过。
@@ -472,8 +511,19 @@ def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9,
 
     **显式上限 max_total_days**: 落后超过这么多交易日 (默认 250 ≈ 一年) 就**拒绝增量、
     一根不写**, 让人去 `research/rebuild_a_pricestore_tushare.py` 全量重建 —— 免得一次
-    update 拉几年 (每交易日 2 次 Tushare 调用 + 逐块重物化, 会顶穿 run_a.sh 的看门狗心跳),
-    也免得把"这份库其实早就该重建了"混在日更里悄悄糊过去。
+    update 拉几年 (每交易日 2 次 Tushare 调用 + 逐块重物化), 也免得把"这份库其实早就该
+    重建了"混在日更里悄悄糊过去。
+
+    **围栏是 systemd, 不是看门狗** (2026-09-08 复验纠正, 之前这里写的"会顶穿 run_a.sh 的
+    看门狗心跳"是错的): 档案 `server/run-scripts.txt` 里 run_a.sh 的实情是
+    `python3 -m ashare.pricestore update` **单独占一行, 排在 `watchdog.py` 的上一行** ——
+    它压根不在"25min 无心跳杀掉重试一次"的覆盖范围内。真正拦住它的是 stock-a.service 的
+    `TimeoutStartSec=4h` 与 `MemoryMax=2800M`: 超时/超内存**杀掉整个 stock-a 单元**并触发
+    `OnFailure=stock-notify@` 告警, 当天 A 股流水线全线不出数 —— 与"看门狗杀掉重试一次"
+    是完全不同的失败形态和处置动作, 值班排障别看错地方。
+    另外那一行末尾是 `|| echo "pricestore update warn (non-fatal, 沿用昨日库)"`, 所以
+    **本函数的退出码/异常都到不了 systemd** (`set -e` 也拦不住 `||`): 判"追平了没有"要看
+    库的 `MAX(d)`/`meta.max_trade_date` 或 /data/ 总览, 不能看单元状态。
     """
     conn = _conn()
     try:
@@ -482,6 +532,7 @@ def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9,
             log.warning("bars_raw 为空 -> 按日增量无起点 (先跑 "
                         "research/rebuild_a_pricestore_tushare.py), 回退旧路径")
             return None
+        _resume_pending_materialize(conn)     # 上次崩在 materialize 中间的话, 先把 bars 补齐
         today = dt.date.today().isoformat()
         days = (m.trading_days or (lambda a, b: None))(_next_day(last), today)
         if days is None:
@@ -496,7 +547,8 @@ def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9,
         if n_total > max_total_days:
             log.error("价格库增量: 落后 %d 个交易日 (%s..%s) 超过上限 %d —— 拒绝增量, 一根未写。"
                       "落后这么多说明这份库该整库重建: research/rebuild_a_pricestore_tushare.py"
-                      " (增量每交易日 2 次 Tushare 调用 + 逐块重物化, 拉一年会顶穿看门狗)。"
+                      " (增量每交易日 2 次 Tushare 调用 + 逐块重物化, 拉一年会撞 stock-a 的"
+                      " TimeoutStartSec=4h / MemoryMax=2800M, 整个单元被杀 + OnFailure 告警)。"
                       "库停在 %s。", n_total, pending[0], pending[-1], max_total_days, last)
             return 0
         log.info("价格库增量: 落后 %d 个交易日 (%s..%s), 按 %d 日一块最早优先追平",
@@ -553,6 +605,10 @@ def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9,
                 if fresh:
                     conn.executemany("INSERT OR REPLACE INTO bars(code,d,o,h,l,c,v,amt) "
                                      "VALUES(?,?,?,?,?,?,?,?)", fresh)
+                if changed:
+                    # 面包屑与当天这一笔同一个事务: 崩在本块末尾的 materialize 里也补得回来
+                    conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",
+                                 (PENDING_MAT_KEY, ",".join(sorted(changed))))
                 n_bars += len(raw)
                 done.append(d)
                 conn.commit()
@@ -560,6 +616,7 @@ def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9,
                          d, len(raw), len(facs), len(changed))
             if changed:
                 materialize(sorted(changed), conn)   # 内含 commit
+                conn.execute("DELETE FROM meta WHERE key=?", (PENDING_MAT_KEY,))
                 log.info("价格库增量: 因子变动 %d 只已整段重物化", len(changed))
             conn.commit()
             n_done += len(done)
