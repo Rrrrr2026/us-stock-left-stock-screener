@@ -14,7 +14,9 @@
 <script src="biweekly_data.js"></script>
 <script src="watch_data.js"></script>
 <script src="sentiment_data.js"></script>
-<script src="leftside_shared.js"></script>
+<!-- ?v= 是缓存指纹: HTML 已由 nginx 置 no-cache, 但本文件走长缓存 —— 改了 leftside_shared.js
+     必须同时把这个日期戳往上抬一格, 否则手机会继续跑旧版 (2026-09-07 验收就踩了这个坑)。 -->
+<script src="leftside_shared.js?v=20260907"></script>
 <style>
   :root{
     --bg:#0b1220; --card:#111a2e; --border:#1e2a44; --text:#e5e7eb; --dim:#9fb4d6; --muted:#7e93b8;
