@@ -37,8 +37,13 @@ log = logging.getLogger("leftside_core.paper")
 
 COOLDOWN_DAYS = 30          # 同一 (类别, 代码) 两次注册之间的最短间隔 (自然日)
 FETCH_PAD_DAYS = 40         # 行情起点 = 最早未了结信号日 - 缓冲
+#: 注册进账本的候选**白名单** —— `_latest_signals` 只抄这些键, 其余一律丢掉。
+#: 账本是三条消费链里唯一**注册一次之后再也不回看快照**的一条, 所以凡是 `_simulate_signal`
+#: 要读的字段, 都必须先出现在这里, 否则那行代码在生产上恒为假 (2026-09-08 卡 R3-4 复检:
+#: `xd` 就是这么漏的 —— 锚定侧读了 `cand.get("xd")`, 而注册时它压根没被抄进来)。
 CAND_KEYS = ("code", "name", "tag", "price", "atr_pct", "plan", "coil",
-             "box_hi", "box_lo", "support_price", "breakdown_price", "cuosha_score")
+             "box_hi", "box_lo", "support_price", "breakdown_price", "cuosha_score",
+             "xd")
 FINAL_STATUSES = ("won", "stopped", "expired", "no_fill", "box_broke",
                   "gap_invalid", "too_expensive", "bad_anchor")
 CATS = ("quality", "cuosha", "coil", "dip")
@@ -230,7 +235,8 @@ def _simulate_signal(sig: dict, ser: dict, budget: float, lot: int) -> dict:
         if not snap_px or snap_px <= 0:
             return {"status": "bad_anchor"}
         # 锚定用原始价 (与快照价同口径), scale/模拟仍用同索引的 qfq —— 见 backtest.anchor_closes
-        # `xd` = 注册那天该票除权且生成侧没拿到原始价 -> 换 "raw×因子比" 序列比 (同回测)。
+        # `xd` = 注册那天该票除权 (生成侧打的标记, 见 export_data.xd_fix_snapshot_prices)
+        # -> 换 "raw×因子比" 序列比 (同回测)。该字段必须在 CAND_KEYS 里, 否则这里恒为假。
         anchor = bt.find_anchor(bt.anchor_closes(ser, xd=bool(cand.get("xd"))),
                                 idx0, float(snap_px))
         if anchor is None or anchor + 1 >= len(dates) or ohlc[anchor][3] <= 0:

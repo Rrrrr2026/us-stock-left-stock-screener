@@ -167,7 +167,7 @@ def select(payload: dict, quality_picks: list, seg: dict, coil_prior: dict | Non
             "code": c["code"], "name": c.get("name"), "industry": ind,
             "tag": (c.get("tag") or "").strip(), "score": round(score, 1),
             "sig_price": c.get("price"), "stop_ref": stop,
-            # 写快照那天该票除权且生成侧没拿到原始价 -> 锚定要换 "raw×因子比" 序列
+            # 写快照那天该票除权 (生成侧只打标记, 不改价) -> 锚定要换 "raw×因子比" 序列
             # (见 backtest.anchor_closes); 绝大多数候选没有这个键, 存 None 不占地方。
             "xd": True if c.get("xd") else None,
         })
@@ -188,7 +188,7 @@ def _sim_cycle(ser: dict, start_date: str, sig_px: float, stop_ref, budget: floa
     if not sig_px or sig_px <= 0:
         return {"status": "bad_anchor"}
     # 锚定用原始价 (与快照价同口径), scale/模拟仍用同索引的 qfq —— 见 backtest.anchor_closes
-    # `xd` = 入选那天该票除权且生成侧没拿到原始价 -> 换 "raw×因子比" 序列比 (同回测/模拟盘)。
+    # `xd` = 入选那天该票除权 (生成侧只打标记, 不改价) -> 换 "raw×因子比" 序列比 (同回测/模拟盘)。
     anchor = bt.find_anchor(bt.anchor_closes(ser, xd=bool(xd)), idx0, float(sig_px))
     if anchor is None or anchor + 1 >= len(dates) or ohlcv[anchor][3] <= 0:
         return {"status": "pending"}

@@ -298,9 +298,14 @@ def xd_rebased_closes(ser: dict) -> np.ndarray | None:
     raw 收盘 6.55, 快照存 6.40 (= 6.55 × 9.8854/10.1171), raw 锚定只能退到 06-26 (near
     1.72%) —— 反而比旧的 qfq 锚定错了一格。
 
-    修法是双保险: **生成侧**把这种票的 price 改记原始价 (`ashare/export_data.py` 的
-    `xd_fix_snapshot_prices`, price_basis='raw_close'); 拿不到原始价时才退到这里 ——
-    快照给该候选打 `xd: true`, 锚定就换成这条序列比。
+    修法**只有这一条**: 生成侧 (`ashare/export_data.py` 的 `xd_fix_snapshot_prices`) 给
+    这种候选打一个 `xd: true` 标记, 锚定侧换成这条序列去比, 快照里的**价一个都不改**。
+    首版还有一条"把 price 改记原始价"的路, 09-08 校验后整条删掉: 快照里的 price 与
+    support_price / box_hi / box_lo / 存档 plan 的四个价位同出一条前复权序列, 而下面
+    `build_and_run` 是拿 `scale = qfq[anchor]/snap_px` 把那些计划价位整体搬进当下 qfq
+    空间的 —— 只换 price 的基准而计划价位不换, 入场带与止损位会整体平移一个除权因子比
+    (实测 600061 -2.29%, 且 603201 的 mode 被推过阈值由 market 翻成 support)。这条序列比
+    没有这个病: price 原样不动, 变的只有"锚到哪根 bar"。
 
     第 i 位 = 「若 i+1 那天除权, 当天导出的复权后昨收」
              = raw[i] × f[i]/f[i+1] = qfq[i] × raw[i+1] / qfq[i+1]
@@ -337,9 +342,10 @@ def anchor_closes(ser: dict, xd: bool = False) -> np.ndarray:
     (实测 7,299 条样本: raw exact 97.5% vs qfq 92.9%, 其中 235 条锚到了不同的 bar)。
     序列里 ohlc/ohlcv 的第 4 列 (index 3) 都是收盘。
 
-    `xd=True` (快照里该候选带 `xd` 标记 = 写快照那天它除权、而生成侧没能拿到原始价):
-    改用 `xd_rebased_closes` 的 "raw × 因子比" 序列比 —— 直接拿 raw 比会漏掉那一次除权,
-    锚定会退到几根之前的错 bar。拿不到该序列时逐字退回旧行为。
+    `xd=True` (快照里该候选带 `xd` 标记 = 写快照那天它除权): 改用 `xd_rebased_closes`
+    的 "raw × 因子比" 序列比 —— 直接拿 raw 比会漏掉那一次除权, 锚定会退到几根之前的错
+    bar。拿不到该序列时逐字退回旧行为。标记多打了也无害: 那条序列在非除权 bar 上逐值
+    退化成 raw, 结果与不打标记一模一样。
     """
     if xd:
         alt = xd_rebased_closes(ser)
@@ -600,7 +606,7 @@ def build_and_run(snaps: list[dict], prices: dict, rkeys=None, rmap=None) -> lis
             # 锚定bar = 快照价真正来自的那根bar (防标注日错位泄漏次日行情)。
             # 锚在原始价上找 (与快照价同口径), 但 scale 与后续模拟一律用 qfq 同索引值 ——
             # 计划价位被 scale 搬进 qfq 空间, 跨除权的收益才对。
-            # `xd` = 写快照那天该票除权且生成侧没拿到原始价 -> 换 "raw×因子比" 序列比。
+            # `xd` = 写快照那天该票除权 (生成侧只打标记, 不改价) -> 换 "raw×因子比" 序列比。
             anchor = find_anchor(anchor_closes(ser, xd=bool(c.get("xd"))),
                                  idx0, float(snap_px))
             if anchor is None or anchor + 1 >= len(dates):
