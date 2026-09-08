@@ -468,7 +468,7 @@ def _ready_verdict(have: str | None, target: str, days) -> dict:
     查数据源/日历, 看到 1 只是等源入库 (等待循环怎么用见 server/run_a.sh.v2)。
 
     **`days` 必须是可信的日历答案**: 空列表在这里被当成"区间内没有开市日 (周末/长假)"
-    -> 已就绪。调用方有义务先分清"真的没有开市日"与"日历坏了返了个空列表" —— 生产的
+    -> 已就绪。调用方有义务先分清"真的没有开市日"与"日历坏了/没填到 target 返了个空列表" —— 生产的
     `ashare.market.trading_days` 在 2026-09-08 返工之前正是把 trade_cal 的异常吞成 `[]`,
     于是 **镜像挂掉 == 周末**, 闸门给出假的"已就绪" (实测: 库停在 09-07、问 09-08、
     trade_cal 抛 500 -> code=0)。守法的调用方见下面的 `_calendar_days`。
@@ -493,20 +493,44 @@ def _ready_verdict(have: str | None, target: str, days) -> dict:
                       f"({missing[0]}{'..' + missing[-1] if len(missing) > 1 else ''})"}
 
 
+# 覆盖自检往目标日之后看多少个自然日。A 股最长连续休市实测 <= 11 个自然日 (春节/国庆各带一个
+# 周末), 20 留了近一倍余量: 这个窗口里一个开市日都没有, 只可能是"日历没填到这里", 不可能是长假
+# (与 ashare/datasource.STORE_RULER_FROZEN_MAX_DAYS=20 同一条依据)。
+CAL_PROBE_DAYS = 20
+
+
 def _calendar_days(fn, start: str, target: str, have: str):
-    """问日历要 (start, target] 的开市日 -> (days, why)。`days is None` = **判不了**, why 说原因。
+    """问日历要 [start, target] (= 库末日次日..目标日) 的开市日 -> (days, why)。
+    `days is None` = **判不了**, why 说原因。
 
-    存在的理由只有一条: **把"区间内真的没有开市日"和"日历这会儿坏了"分开**。
-    `_ready_verdict` 把空列表读成"周末/长假 -> 已就绪", 所以任何一个把取历失败吞成 `[]` 的
-    Market 实现都能让闸门放行昨日库 —— 2026-09-08 的返工就是修这个 (生产实现
-    `ashare.market.trading_days` 当时 `except -> return []`)。
+    存在的理由只有一条: **把"区间内真的没有开市日"和"日历这会儿答不了"分开**。
+    `_ready_verdict` 把空列表读成"周末/长假 -> 已就绪", 而空列表能当周末的前提是
+    **日历已经覆盖到 target 且区间内确实没有开市日** —— 前一半必须证明, 不能假定。
 
-    两道防线, 都要:
-      ① 源头: `ashare.market.trading_days` 改成失败**抛出**, 由这里的 try 接住 -> 判不了;
-      ② 这里: 拿到空列表时**反问一句必然非空的问题** —— "库末日 `have` 那天开不开市"。
-         `have` 是库里真有行情的那天, 按定义必是开市日, 日历若连它都不给, 说明这份答案
-         不可信, 空列表就不能被当成周末。代价是**只有空列表那一路**多 1 次调用 (周末/长假
-         每轮多一次, 工作日 0 次), 换掉的是"数据源挂掉当天照发昨日行情"。
+    三道防线, 都要:
+      ① 源头: `ashare.market.trading_days` 失败**抛出** (2026-09-08 返工), 由这里的 try 接住 -> 判不了;
+      ② 区间内有开市日 -> 结论只会是"还没到", 日历填到哪都不影响, 原样返回 (工作日 0 次额外调用);
+      ③ 空答案时**证明覆盖**: 再问一句 "[target, target+CAL_PROBE_DAYS 自然日] 有没有开市日"。
+         有 -> 日历至少填到 target 之后的那个开市日, 中间的空答案才可信 (真周末/长假, 放行);
+         一个都没有 -> 判不了 (rc=2, run_a.sh v2 的等待循环照等)。
+
+    **为什么是往后问, 不是往前问** (2026-09-08 卡 GATE-FIX, 复验员抓的 HIGH): 上一版这里反问的
+    是"库末日 `have` 那天开不开市" —— `have` 是库里真有行情的那天, 日历**必然**覆盖它, 所以那
+    一问只能证明"日历对过去还活着", 证明不了"日历覆盖到 target"。镜像日历若只填到 have 与
+    target 之间某处 (年末/年初下一年日历还没入库、镜像表滞后), `fn(next(have), target)` 返 `[]`,
+    旧自检照样放行, 闸门给假的"已就绪", v2 拿昨日库跑 —— 正是本闸门要消灭的那件事 (复验员用真
+    market.trading_days + 镜像口径复现: 库到 2027-01-04、问 01-05、日历填到 01-04 为止)。
+    "target 之后还有没有开市日"是 have 那一问给不了的信息, 只有往后问才拿得到。
+
+    **为什么只问开市日, 不逐日核 is_open**: 生产实现 `ashare.tushare_client.trade_cal` 在任何
+    参数下都只返开市日 (服务端 is_open=1; 传 is_open=None 时它也在客户端只留 is_open==1),
+    Market 钩子 `trading_days` 的契约也是"开市日列表" —— 拿不到 is_open=0 的日子, 也就做不了
+    "逐日连续无缺"那种更强的核对。往后问一句开市日已经够用: 日历是按自然日连续填的表, 有一条
+    >= target 的开市日就说明 target 在它的覆盖范围内。
+    代价: 只有空答案那一路多 1 次调用 (周末/长假每轮 +1, 工作日 0 次), 与旧自检相同。
+    副作用也说清楚: 下一年的日历若到年初还没入库, 元旦那种"工作日休市"会判不了 -> 等 1 小时再告警
+    一次 (那天本来也只是拿上一个交易日的价重发), 值班去看 trade_cal 有没有下一年 —— 这正是要的
+    行为: 覆盖证明不了就不放行。
     """
     try:
         days = fn(start, target)
@@ -514,15 +538,17 @@ def _calendar_days(fn, start: str, target: str, have: str):
         return None, f"交易日历取失败 ({type(e).__name__}: {str(e)[:80]})"
     if days is None:
         return None, "交易日历不可用 (非 Tushare 按日路径 / 源开关关着)"
-    if days:
-        return days, ""
+    start, target = _iso_day(start), _iso_day(target)
+    if any(start <= _iso_day(x) <= target for x in days):
+        return days, ""                           # 区间内有开市日 -> 只会判"还没到", 无需证明覆盖
     try:
-        probe = fn(have, have)
+        probe_end = (dt.date.fromisoformat(target) + dt.timedelta(days=CAL_PROBE_DAYS)).isoformat()
+        probe = fn(target, probe_end)
     except Exception as e:                        # noqa: BLE001
-        return None, f"交易日历自检抛错 ({type(e).__name__}: {str(e)[:80]})"
-    if not probe or _iso_day(have) not in {_iso_day(x) for x in probe}:
-        return None, (f"交易日历自检没过 (问它库末日 {have} 开不开市, 它连这天都不给), "
-                      f"这会儿的日历不可信, 不能把它的空答案当成周末")
+        return None, f"交易日历覆盖自检抛错 ({type(e).__name__}: {str(e)[:80]})"
+    if not probe or not any(_iso_day(x) >= target for x in probe):
+        return None, (f"交易日历覆盖自检没过 (问它 {target}..{probe_end} 有没有开市日, 一个都不给): "
+                      f"日历可能只填到 {target} 之前 (库末日 {have}), 空答案不能当周末/长假")
     return days, ""
 
 
@@ -550,7 +576,8 @@ def ready_for(target: str | None = None, conn: sqlite3.Connection | None = None)
 
     只读: 不写库, 也不联网取行情 —— 唯一的外部调用是交易日历 (`Market.trading_days`,
     A 股实现是 Tushare `trade_cal`): 工作日 1 次; 只有日历返回空列表 (看着像周末/长假)
-    那一路会多问 1 次做自检, 见 `_calendar_days`。
+    那一路会多问 1 次做**覆盖自检** (target 之后 CAL_PROBE_DAYS 个自然日内有没有开市日 ——
+    证明日历已经填过 target, 空答案才能当周末), 见 `_calendar_days`。
     """
     own = conn is None
     conn = conn or _conn()
