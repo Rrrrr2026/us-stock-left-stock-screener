@@ -521,7 +521,7 @@ def _calendar_days(fn, start: str, target: str, have: str):
     except Exception as e:                        # noqa: BLE001
         return None, f"交易日历自检抛错 ({type(e).__name__}: {str(e)[:80]})"
     if not probe or _iso_day(have) not in {_iso_day(x) for x in probe}:
-        return None, (f"交易日历自检没过 (问它库末日 {have} 开不开市, 它连这天都不给) —— "
+        return None, (f"交易日历自检没过 (问它库末日 {have} 开不开市, 它连这天都不给), "
                       f"这会儿的日历不可信, 不能把它的空答案当成周末")
     return days, ""
 
@@ -572,7 +572,7 @@ def ready_for(target: str | None = None, conn: sqlite3.Connection | None = None)
                 log.warning("ready_for: %s -> 判不了 (UNKNOWN), 等待循环按'还没到'处理", why)
     out = _ready_verdict(have, target, days)
     if have and days is None and out["code"] == READY_UNKNOWN and why:
-        out["reason"] = f"库内到 {have}, 但{why} —— 判不了, 不放行"
+        out["reason"] = f"库内到 {have}, {why} —— 判不了, 不放行"
     out["have"], out["target"] = have, target
     return out
 
