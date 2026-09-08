@@ -164,8 +164,9 @@
   #sideNav a{ display:block; padding:7px 10px; border-radius:6px; color:var(--dim); font-size:13px;
     text-decoration:none; }
   #sideNav a:hover{ background:var(--rowhover); color:var(--text); }
-  /* data-soon: 页面还没上线的子站 (如 /strategies/), 桌面侧栏先不露;
-     手机"更多"抽屉里由 SITE_SOON / navSites() 同步过滤, 上线后两处一起摘 */
+  /* data-soon: 页面还没上线的子站, 桌面侧栏先不露; 手机"更多"抽屉里由
+     SITE_SOON / navSites() 同步过滤, 上线后两处一起摘。
+     2026-09-08 /strategies/ 已上线, 当前无未上线子站 (机制留给下一个) */
   #sideNav a[data-soon], #sideNav a[data-hidden]{ display:none; }
   #navToggle{ position:fixed; left:132px; top:50%; transform:translateY(-50%); z-index:60;
     width:14px; height:72px; padding:0; border:1px solid var(--inputborder); border-left:0;
@@ -3445,10 +3446,11 @@
     // 真相来源是侧栏的**外链** (#sideNav a:not([href^="#"])): 侧栏新加一条 (如 /data/ 数据总览)
     // 手机抽屉里自动就有, 标签也直接用侧栏那条的文案 (有 data-i18n 就跟着切中英)。
     // SITE_FIX 是侧栏里没有、但必须露出的固定子站 —— 按规格 §3 的顺序补在前面, 已在侧栏出现的不重复。
-    // 未上线子站: 页面还没发布 (/strategies/ 现在是 404), 抽屉里不能给死链 ——
+    // 未上线子站闸门: 页面还没发布时抽屉里不能给死链 —— 把那个路径写进 SITE_SOON,
     // 两个来源 (SITE_FIX 固定表 + 侧栏外链) 都滤掉; 侧栏若已挂链接,
-    // 给那条 <a> 加 data-soon (CSS 顺带隐掉桌面端)。策略库上线时删掉这行即可。
-    const SITE_SOON = {"/strategies/":1};
+    // 再给那条 <a> 加 data-soon (CSS 顺带隐掉桌面端)。上线时把路径从表里删掉即可。
+    // 2026-09-08 老板追认 /strategies/ 上线, 表已清空: 当前无未上线子站 (机制不删)。
+    const SITE_SOON = {};
     const SITE_FIX = [["site_targets","/targets/"], ["site_lab","/lab/"],
                       ["site_rightside","/rightside/"], ["site_strategies","/strategies/"]];
     const SITE_ICO = {"/targets/":"i-target", "/lab/":"i-flask", "/rightside/":"i-trend",
