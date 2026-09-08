@@ -460,9 +460,18 @@ def _ready_verdict(have: str | None, target: str, days) -> dict:
     `days` = 交易日历给出的 (have, target] 之间的**开市日**列表; None = 日历不可用。
     -> {"ready": bool, "code": READY_*, "missing": [...], "reason": "..."}
 
-    三态而不是两态: "还没到" 与 "判不了" 必须分开。等待循环对前者应该继续等 (等到超时就
-    宁可不出榜也不发布昨日行情), 对后者只能按老规矩往下走 —— 把"判不了"当成"还没到"会在
-    交易日历不可用时每天空等两小时再告警, 那是用一次数据源抖动换一天不出数。
+    三态而不是两态: "还没到" 与 "判不了" 必须分开 —— 但**两者都不许放行**。首版这里写的
+    理由是 "判不了就按老规矩往下走, 免得日历一抖动就空等两小时", 那个理由是错的:
+    `have >= target` 的短路发生在问日历**之前**, 所以能走到"判不了"的前提就是
+    **库里没有目标日**; 日历不可信时唯一还站得住的事实恰恰是"这份库是旧的"。放行 =
+    拿昨日行情当今天发布, 正是本闸门要挡的那件事。两个码仍要分开, 是因为值班看到 2 该去
+    查数据源/日历, 看到 1 只是等源入库 (等待循环怎么用见 server/run_a.sh.v2)。
+
+    **`days` 必须是可信的日历答案**: 空列表在这里被当成"区间内没有开市日 (周末/长假)"
+    -> 已就绪。调用方有义务先分清"真的没有开市日"与"日历坏了返了个空列表" —— 生产的
+    `ashare.market.trading_days` 在 2026-09-08 返工之前正是把 trade_cal 的异常吞成 `[]`,
+    于是 **镜像挂掉 == 周末**, 闸门给出假的"已就绪" (实测: 库停在 09-07、问 09-08、
+    trade_cal 抛 500 -> code=0)。守法的调用方见下面的 `_calendar_days`。
     """
     if not have:
         return {"ready": False, "code": READY_UNKNOWN, "missing": [],
@@ -484,6 +493,39 @@ def _ready_verdict(have: str | None, target: str, days) -> dict:
                       f"({missing[0]}{'..' + missing[-1] if len(missing) > 1 else ''})"}
 
 
+def _calendar_days(fn, start: str, target: str, have: str):
+    """问日历要 (start, target] 的开市日 -> (days, why)。`days is None` = **判不了**, why 说原因。
+
+    存在的理由只有一条: **把"区间内真的没有开市日"和"日历这会儿坏了"分开**。
+    `_ready_verdict` 把空列表读成"周末/长假 -> 已就绪", 所以任何一个把取历失败吞成 `[]` 的
+    Market 实现都能让闸门放行昨日库 —— 2026-09-08 的返工就是修这个 (生产实现
+    `ashare.market.trading_days` 当时 `except -> return []`)。
+
+    两道防线, 都要:
+      ① 源头: `ashare.market.trading_days` 改成失败**抛出**, 由这里的 try 接住 -> 判不了;
+      ② 这里: 拿到空列表时**反问一句必然非空的问题** —— "库末日 `have` 那天开不开市"。
+         `have` 是库里真有行情的那天, 按定义必是开市日, 日历若连它都不给, 说明这份答案
+         不可信, 空列表就不能被当成周末。代价是**只有空列表那一路**多 1 次调用 (周末/长假
+         每轮多一次, 工作日 0 次), 换掉的是"数据源挂掉当天照发昨日行情"。
+    """
+    try:
+        days = fn(start, target)
+    except Exception as e:                        # noqa: BLE001
+        return None, f"交易日历取失败 ({type(e).__name__}: {str(e)[:80]})"
+    if days is None:
+        return None, "交易日历不可用 (非 Tushare 按日路径 / 源开关关着)"
+    if days:
+        return days, ""
+    try:
+        probe = fn(have, have)
+    except Exception as e:                        # noqa: BLE001
+        return None, f"交易日历自检抛错 ({type(e).__name__}: {str(e)[:80]})"
+    if not probe or _iso_day(have) not in {_iso_day(x) for x in probe}:
+        return None, (f"交易日历自检没过 (问它库末日 {have} 开不开市, 它连这天都不给) —— "
+                      f"这会儿的日历不可信, 不能把它的空答案当成周末")
+    return days, ""
+
+
 def ready_for(target: str | None = None, conn: sqlite3.Connection | None = None) -> dict:
     """价格库是否已经含有 `target` (默认今天) 这个交易日 -> `_ready_verdict` 的字典。
 
@@ -500,8 +542,15 @@ def ready_for(target: str | None = None, conn: sqlite3.Connection | None = None)
     还是"今天"而北京已经是明天, 两边仍然一致 (都用本地日期), 但 `target` 会比北京日历晚一天,
     等待循环会以为已经就绪 —— 也就是说这个函数在晚场是**偏宽松**的, 不会空等, 只会少等。
 
+    **看 daily 的末日就够了, 因为写入侧连坐** (2026-09-08 返工补): 本函数只读
+    `MAX(bars_raw.d)`, 一眼看去是"只把关日线、不把关复权因子"; 真正的把关在
+    `_update_daily_by_date` —— 那里当日 daily 与 **adj_factor 两个端点都够 90% 才写这一天**,
+    所以 bars_raw 里有某天 => 那天的因子当时也是齐的。闸门因此不必再查 adj 表 (查了反而会
+    被历史上的老洞永久卡住)。**要是哪天把写入侧那道 adj 守卫拆了, 这里就得自己查 adj**。
+
     只读: 不写库, 也不联网取行情 —— 唯一的外部调用是交易日历 (`Market.trading_days`,
-    A 股实现是 Tushare `trade_cal`, 每次 1 个调用)。
+    A 股实现是 Tushare `trade_cal`): 工作日 1 次; 只有日历返回空列表 (看着像周末/长假)
+    那一路会多问 1 次做自检, 见 `_calendar_days`。
     """
     own = conn is None
     conn = conn or _conn()
@@ -514,17 +563,16 @@ def ready_for(target: str | None = None, conn: sqlite3.Connection | None = None)
             conn.close()
     have = _iso_day(have) if have else have
     target = _iso_day(target or dt.date.today().isoformat())
-    days = None
-    if have:
-        m = current()
-        fn = getattr(m, "trading_days", None)
+    days, why = None, "Market 没有交易日历 (trading_days=None)"
+    if have and _iso_day(have) < target:          # 已经追平就不必问日历 (省一次调用)
+        fn = getattr(current(), "trading_days", None)
         if fn is not None:
-            try:
-                days = fn(_next_day(have), target)
-            except Exception as e:                # noqa: BLE001  (取历失败 -> 判不了, 不是没到)
-                log.warning("ready_for: 交易日历取失败 (%s), 判定为 UNKNOWN", str(e)[:120])
-                days = None
+            days, why = _calendar_days(fn, _next_day(have), target, have)
+            if days is None:
+                log.warning("ready_for: %s -> 判不了 (UNKNOWN), 等待循环按'还没到'处理", why)
     out = _ready_verdict(have, target, days)
+    if have and days is None and out["code"] == READY_UNKNOWN and why:
+        out["reason"] = f"库内到 {have}, 但{why} —— 判不了, 不放行"
     out["have"], out["target"] = have, target
     return out
 
@@ -604,6 +652,18 @@ def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9,
     守卫放在核心而不是只放在 run_a.sh 里: update_daily 的调用方不止 run_a.sh (factor_export、
     r1shadow、研究脚本、手工 `python -m ashare.pricestore update` 都会调), 而 Tushare 日线
     15-17 点北京才入库 —— 任何一个赶在那之前跑的调用方都能把半天的残缺行情写死进库。
+    **daily 与 adj_factor 两个端点各判各的, 都够了才写这一天** (2026-09-08 返工补): 两个
+    端点不同源、到达时间不同步 (09-08 17:34 实测 daily 5551 行 / adj 5558 行), 而"提前跑"
+    正是 daily 先到、因子后到的那个窗口。只把关 daily 的话, 因子空着的那天照样把 bars_raw
+    写死, 下次增量的起点 `MAX(bars_raw.d)` 就越过去了 —— **那天缺的因子永远补不回来**:
+    `_qfq_rows` 对缺因子是按日期前向填充, 于是当天除权除息的票拿除权前的因子算 qfq, 在前
+    复权序列上留一个永久台阶, 事后整库 materialize 也修不好 (adj 表本身有洞), 只有重拉那天
+    的 adj_factor 才行。顺带也省掉"因子全空 -> 全员进 changed -> 每轮整库重物化"的空烧。
+
+    **交易日历取不到 = 停下, 不是"无新交易日"** (2026-09-08 返工补): `m.trading_days` 抛错
+    时就地 return 0, 既不写也**不推 `meta.max_trade_date`**。以前这里没有 try, 而生产的
+    `ashare.market.trading_days` 把异常吞成 `[]`, 于是"日历挂了"长得和"今天休市"一模一样:
+    日志打一句"库内已到 X, 无新交易日"、meta 顺手写上昨天, update 与 ready 两步一起静默放行。
 
     **显式上限 max_total_days**: 落后超过这么多交易日 (默认 250 ≈ 一年) 就**拒绝增量、
     一根不写**, 让人去 `research/rebuild_a_pricestore_tushare.py` 全量重建 —— 免得一次
@@ -630,7 +690,13 @@ def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9,
             return None
         _resume_pending_materialize(conn)     # 上次崩在 materialize 中间的话, 先把 bars 补齐
         today = dt.date.today().isoformat()
-        days = (m.trading_days or (lambda a, b: None))(_next_day(last), today)
+        try:
+            days = (m.trading_days or (lambda a, b: None))(_next_day(last), today)
+        except Exception as e:               # noqa: BLE001  (取历失败 != 今天休市, 见 docstring)
+            log.error("价格库增量: 交易日历取失败 (%s) —— 本次一根未写, 也不推 "
+                      "meta.max_trade_date (推了就等于把'昨天'伪装成'已追平')。库停在 %s。",
+                      str(e)[:120], last)
+            return 0
         if days is None:
             return None                      # 交易日历不可用 = 路径未启用
         pending = sorted(d for d in days if d > last)
@@ -676,7 +742,18 @@ def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9,
                                 ready_ratio * 100, done[-1] if done else last)
                     stopped = True
                     break
-                facs = (m.fetch_adj_by_date or (lambda x: {}))(d) or {}
+                fetch_adj = getattr(m, "fetch_adj_by_date", None)
+                facs = fetch_adj(d) if fetch_adj is not None else None
+                if fetch_adj is not None and (facs is None or len(facs) < min_rows):
+                    # 日线到了不算到: 因子这天没写进去, 以后就永远补不回来 (见 docstring)
+                    log.warning("Tushare 当日复权因子未就绪, 沿用昨日库 (%s adj_factor %s 行 "
+                                "< 在市 %d 只的 %.0f%%) —— 日线本身已经够了, 但这天先不写: "
+                                "写了 MAX(bars_raw.d) 就越过去, 缺的因子再也回不来。停在 %s。",
+                                d, "取不到" if facs is None else len(facs), listed_n,
+                                ready_ratio * 100, done[-1] if done else last)
+                    stopped = True
+                    break
+                facs = facs or {}
                 conn.executemany("INSERT OR REPLACE INTO bars_raw(code,d,o,h,l,c,v,amt) "
                                  "VALUES(?,?,?,?,?,?,?,?)",
                                  [(c, d, *vals) for c, vals in raw.items()])
