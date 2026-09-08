@@ -167,6 +167,9 @@ def select(payload: dict, quality_picks: list, seg: dict, coil_prior: dict | Non
             "code": c["code"], "name": c.get("name"), "industry": ind,
             "tag": (c.get("tag") or "").strip(), "score": round(score, 1),
             "sig_price": c.get("price"), "stop_ref": stop,
+            # 写快照那天该票除权且生成侧没拿到原始价 -> 锚定要换 "raw×因子比" 序列
+            # (见 backtest.anchor_closes); 绝大多数候选没有这个键, 存 None 不占地方。
+            "xd": True if c.get("xd") else None,
         })
         per_ind[ind] = per_ind.get(ind, 0) + 1
         if len(picks) >= MAX_PICKS:
@@ -175,7 +178,7 @@ def select(payload: dict, quality_picks: list, seg: dict, coil_prior: dict | Non
 
 
 def _sim_cycle(ser: dict, start_date: str, sig_px: float, stop_ref, budget: float,
-               lot: int) -> dict:
+               lot: int, xd: bool = False) -> dict:
     """次日开盘买入 -> 止损保护 -> 第 CYCLE_BARS 根bar收盘结算。价格按锚定缩放。"""
     m = current()
     dates, ohlcv = ser["dates"], np.asarray(ser["ohlcv"], dtype=float)
@@ -185,7 +188,8 @@ def _sim_cycle(ser: dict, start_date: str, sig_px: float, stop_ref, budget: floa
     if not sig_px or sig_px <= 0:
         return {"status": "bad_anchor"}
     # 锚定用原始价 (与快照价同口径), scale/模拟仍用同索引的 qfq —— 见 backtest.anchor_closes
-    anchor = bt.find_anchor(bt.anchor_closes(ser), idx0, float(sig_px))
+    # `xd` = 入选那天该票除权且生成侧没拿到原始价 -> 换 "raw×因子比" 序列比 (同回测/模拟盘)。
+    anchor = bt.find_anchor(bt.anchor_closes(ser, xd=bool(xd)), idx0, float(sig_px))
     if anchor is None or anchor + 1 >= len(dates) or ohlcv[anchor][3] <= 0:
         return {"status": "pending"}
     scale = float(ohlcv[anchor][3]) / float(sig_px)
@@ -283,7 +287,7 @@ def update() -> dict | None:
             ser = prices.get(p["code"])
             r = {"status": "no_data"} if ser is None else _sim_cycle(
                 ser, cy["start_date"], p.get("sig_price"), p.get("stop_ref"),
-                eff_budget, lot)
+                eff_budget, lot, xd=bool(p.get("xd")))
             p["result"] = r
         done = [p["result"] for p in cy["picks"]
                 if p["result"].get("status") in ("stopped", "cycle_end")]

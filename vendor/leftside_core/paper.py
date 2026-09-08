@@ -230,7 +230,9 @@ def _simulate_signal(sig: dict, ser: dict, budget: float, lot: int) -> dict:
         if not snap_px or snap_px <= 0:
             return {"status": "bad_anchor"}
         # 锚定用原始价 (与快照价同口径), scale/模拟仍用同索引的 qfq —— 见 backtest.anchor_closes
-        anchor = bt.find_anchor(bt.anchor_closes(ser), idx0, float(snap_px))
+        # `xd` = 注册那天该票除权且生成侧没拿到原始价 -> 换 "raw×因子比" 序列比 (同回测)。
+        anchor = bt.find_anchor(bt.anchor_closes(ser, xd=bool(cand.get("xd"))),
+                                idx0, float(snap_px))
         if anchor is None or anchor + 1 >= len(dates) or ohlc[anchor][3] <= 0:
             return res
         scale = float(ohlc[anchor][3]) / float(snap_px)

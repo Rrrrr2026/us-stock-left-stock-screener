@@ -280,23 +280,77 @@ def fetch_price_series(codes: list[str], start: str, need_date: str | None = Non
     return res
 
 
-def anchor_closes(ser: dict) -> np.ndarray:
+def _qfq_closes(ser: dict) -> np.ndarray:
+    """序列里的前复权收盘 —— ohlc/ohlcv 的第 4 列 (index 3) 都是收盘。"""
+    arr = ser.get("ohlc")
+    if arr is None:
+        arr = ser.get("ohlcv")
+    return np.asarray(arr, dtype=float)[:, 3]
+
+
+def xd_rebased_closes(ser: dict) -> np.ndarray | None:
+    """**除权日快照专用**的比价序列 —— "raw × 因子比", 逐根算出来。
+
+    背景 (2026-09-08 卡 R3-4, 生产同款样本上唯一一笔"新口径更差"的根因): 快照写出来那天
+    如果某只票**当天除权**, 那么当天导出的前复权序列基准已经是除权后的因子, 而榜单里的
+    `price` 取的是序列最后一根 (=昨天) 的收盘 —— 于是快照存下来的是一个**除权后的昨收**,
+    它既不等于昨天的原始收盘, 也不等于任何一天的成交价。600061 XD国投资 2026-06-30:
+    raw 收盘 6.55, 快照存 6.40 (= 6.55 × 9.8854/10.1171), raw 锚定只能退到 06-26 (near
+    1.72%) —— 反而比旧的 qfq 锚定错了一格。
+
+    修法是双保险: **生成侧**把这种票的 price 改记原始价 (`ashare/export_data.py` 的
+    `xd_fix_snapshot_prices`, price_basis='raw_close'); 拿不到原始价时才退到这里 ——
+    快照给该候选打 `xd: true`, 锚定就换成这条序列比。
+
+    第 i 位 = 「若 i+1 那天除权, 当天导出的复权后昨收」
+             = raw[i] × f[i]/f[i+1] = qfq[i] × raw[i+1] / qfq[i+1]
+    因子比不用另外查表: qfq[i] = raw[i]·f[i]/F 里的公共基准 F 在相除时被约掉了。
+    **没除权的那些 bar 上它逐值退化成 raw[i]** (f[i]==f[i+1]), 所以这条序列对非除权日
+    零影响, 不会把本来锚得好好的样本带偏。最后一根没有"下一根"可用, 直接放 raw[-1]。
+    -> 缺 raw_close / 长度对不上 / 无法计算时返回 None (调用方退回旧行为)。
+    """
+    raw = ser.get("raw_close")
+    if raw is None:
+        return None
+    raw = np.asarray(raw, dtype=float)
+    if raw.size < 2 or not np.any(raw > 0):
+        return None
+    try:
+        qfq = _qfq_closes(ser)
+    except Exception:                                    # noqa: BLE001
+        return None
+    if qfq.size != raw.size:
+        return None
+    out = np.full(raw.size, np.nan, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out[:-1] = qfq[:-1] * raw[1:] / qfq[1:]
+    out[-1] = raw[-1]
+    out[~np.isfinite(out)] = np.nan
+    return out if np.any(out > 0) else None
+
+
+def anchor_closes(ser: dict, xd: bool = False) -> np.ndarray:
     """锚定该用哪条收盘价序列: 有原始价用原始价, 没有就退回前复权 (旧行为)。
 
     为什么必须是原始价: 快照里的 price 是当天的成交价; 前复权序列的基准是"库内最新一天",
     快照日之后的每一次除权都会把那天的 qfq 价整体平移, 拿它去比 0.25% 的容差必然错配
     (实测 7,299 条样本: raw exact 97.5% vs qfq 92.9%, 其中 235 条锚到了不同的 bar)。
     序列里 ohlc/ohlcv 的第 4 列 (index 3) 都是收盘。
+
+    `xd=True` (快照里该候选带 `xd` 标记 = 写快照那天它除权、而生成侧没能拿到原始价):
+    改用 `xd_rebased_closes` 的 "raw × 因子比" 序列比 —— 直接拿 raw 比会漏掉那一次除权,
+    锚定会退到几根之前的错 bar。拿不到该序列时逐字退回旧行为。
     """
+    if xd:
+        alt = xd_rebased_closes(ser)
+        if alt is not None:
+            return alt
     raw = ser.get("raw_close")
     if raw is not None:
         raw = np.asarray(raw, dtype=float)
         if raw.size and np.any(raw > 0):
             return raw
-    arr = ser.get("ohlc")
-    if arr is None:
-        arr = ser.get("ohlcv")
-    return np.asarray(arr, dtype=float)[:, 3]
+    return _qfq_closes(ser)
 
 
 # ===========================================================================
@@ -546,7 +600,9 @@ def build_and_run(snaps: list[dict], prices: dict, rkeys=None, rmap=None) -> lis
             # 锚定bar = 快照价真正来自的那根bar (防标注日错位泄漏次日行情)。
             # 锚在原始价上找 (与快照价同口径), 但 scale 与后续模拟一律用 qfq 同索引值 ——
             # 计划价位被 scale 搬进 qfq 空间, 跨除权的收益才对。
-            anchor = find_anchor(anchor_closes(ser), idx0, float(snap_px))
+            # `xd` = 写快照那天该票除权且生成侧没拿到原始价 -> 换 "raw×因子比" 序列比。
+            anchor = find_anchor(anchor_closes(ser, xd=bool(c.get("xd"))),
+                                 idx0, float(snap_px))
             if anchor is None or anchor + 1 >= len(dates):
                 continue
             if ohlc[anchor][3] <= 0:
