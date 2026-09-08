@@ -30,17 +30,6 @@ if exist "..\stock-core\dashboard\leftside_shared.js" copy /Y "..\stock-core\das
 if exist "dashboard\leftside_shared.js" copy /Y "dashboard\leftside_shared.js" "docs\leftside_shared.js" >nul
 robocopy "dashboard\history" "docs\history" /MIR /NJH /NJS /NDL /NFL >nul 2>&1
 
-echo [2.5/3] Sync unified site ...
-if exist "..\stock-screener\docs\us" (
-  robocopy "dashboard" "..\stock-screener\docs\us" /E /NJH /NJS /NDL /NFL >nul 2>&1
-  pushd "..\stock-screener"
-  git add docs >> "%LOG%" 2>&1
-  git commit -m "sync us data" >> "%LOG%" 2>&1
-  git pull --rebase --autostash origin main >> "%LOG%" 2>&1
-  git push >> "%LOG%" 2>&1
-  popd
-)
-
 echo [3/3] Publish to GitHub Pages ...
 git add docs vendor >> "%LOG%" 2>&1
 git commit -m "auto update data" >> "%LOG%" 2>&1
