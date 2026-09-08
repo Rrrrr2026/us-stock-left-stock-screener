@@ -433,6 +433,102 @@ def _next_day(d: str) -> str:
     return (dt.date.fromisoformat(str(d)[:10]) + dt.timedelta(days=1)).isoformat()
 
 
+# ------------------------------------------------------------------ 就绪判定 (给等待循环用)
+
+READY_YES, READY_NO, READY_UNKNOWN = 0, 1, 2      # 也是 `-m ...pricestore ready` 的退出码
+
+
+def _iso_day(v) -> str:
+    """'20260908' / '2026-09-08' / date -> '2026-09-08'。
+
+    看着多余, 其实是本节唯一一个必须有的函数: 库里的日期是 `YYYY-MM-DD`, 而人和 systemd
+    传进来的是 Tushare 那种 `YYYYMMDD`, 两者**字符串直接比大小是错的** —— '-' (0x2D) 小于
+    任何数字, 所以 '2026-09-08' < '20260908' 恒成立, 不归一化会让 `have >= target` 永远为假,
+    再顺手把 (次日, 目标) 这个**逆序**区间喂给 trade_cal, 得到 0 个开市日, 最后判成
+    "周末/长假, 无需等待" —— 一个"已就绪"的假答案。首版就是这么错的 (实测
+    `ready 20260907` 在库停在 09-07 时走的是这条假路径), 留此为记。
+    """
+    s = str(v or "").strip()[:10]
+    if len(s) == 8 and s.isdigit():
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return s
+
+
+def _ready_verdict(have: str | None, target: str, days) -> dict:
+    """纯判定 (无 IO, 便于单测): 库末日 `have` 相对目标日 `target` 算不算追平了。
+
+    `days` = 交易日历给出的 (have, target] 之间的**开市日**列表; None = 日历不可用。
+    -> {"ready": bool, "code": READY_*, "missing": [...], "reason": "..."}
+
+    三态而不是两态: "还没到" 与 "判不了" 必须分开。等待循环对前者应该继续等 (等到超时就
+    宁可不出榜也不发布昨日行情), 对后者只能按老规矩往下走 —— 把"判不了"当成"还没到"会在
+    交易日历不可用时每天空等两小时再告警, 那是用一次数据源抖动换一天不出数。
+    """
+    if not have:
+        return {"ready": False, "code": READY_UNKNOWN, "missing": [],
+                "reason": "库里一根 bar 都没有 (bars_raw 空) —— 该整库重建, 不是等一等的事"}
+    have = _iso_day(have)
+    target = _iso_day(target)
+    if have >= target:
+        return {"ready": True, "code": READY_YES, "missing": [],
+                "reason": f"库内已到 {have} (>= 目标 {target})"}
+    if days is None:
+        return {"ready": False, "code": READY_UNKNOWN, "missing": [],
+                "reason": f"库内到 {have}, 但交易日历不可用 (非 Tushare 按日路径/取历失败), 无法判定"}
+    missing = sorted(d for d in (_iso_day(x) for x in days) if have < d <= target)
+    if not missing:
+        return {"ready": True, "code": READY_YES, "missing": [],
+                "reason": f"库内到 {have}, {have} 与 {target} 之间没有开市日 (周末/长假), 无需等待"}
+    return {"ready": False, "code": READY_NO, "missing": missing,
+            "reason": f"库内到 {have}, 还缺 {len(missing)} 个交易日 "
+                      f"({missing[0]}{'..' + missing[-1] if len(missing) > 1 else ''})"}
+
+
+def ready_for(target: str | None = None, conn: sqlite3.Connection | None = None) -> dict:
+    """价格库是否已经含有 `target` (默认今天) 这个交易日 -> `_ready_verdict` 的字典。
+
+    **为什么要有这个函数** (老板 2026-09-08 决定⑤): A 股流水线要从 14:00 CEST (北京 20:00)
+    往前挪到收盘后不久, 于是"源还没入库"从一个理论风险变成日常会撞上的事。原来的处置是
+    `_update_daily_by_date` 的未就绪守卫就地停下 + run_a.sh 那行末尾的 `|| echo ... non-fatal`,
+    结果是**流水线照跑昨日库、把昨日行情当今天发布**。run_a.sh v2 改成"调 update -> 问一句
+    ready -> 没到就睡 10 分钟再来", 超时宁可 exit 1 告警也不出榜 —— 本函数就是那句"问一句"。
+
+    **今天是哪天, 必须和 update 用同一把尺子**: 这里用 `dt.date.today()` (进程本地日期),
+    与 `_update_daily_by_date` 里的 `today` 逐字一致。服务器是 Europe/Berlin, 北京 = CEST+6h,
+    所以本地日期只在 **18:00 CEST 之后**才会与北京日历差一天; A 流水线跑在 08:00-18:00 CEST
+    区间内, 两者同日。**若哪天把定时器挪到 18:00 CEST 之后, 这条注释就得重看**: 那时本地日期
+    还是"今天"而北京已经是明天, 两边仍然一致 (都用本地日期), 但 `target` 会比北京日历晚一天,
+    等待循环会以为已经就绪 —— 也就是说这个函数在晚场是**偏宽松**的, 不会空等, 只会少等。
+
+    只读: 不写库, 也不联网取行情 —— 唯一的外部调用是交易日历 (`Market.trading_days`,
+    A 股实现是 Tushare `trade_cal`, 每次 1 个调用)。
+    """
+    own = conn is None
+    conn = conn or _conn()
+    try:
+        have = conn.execute("SELECT MAX(d) FROM bars_raw").fetchone()[0]
+        if not have:                              # v1 老库 / 美股库没有 bars_raw
+            have = conn.execute("SELECT MAX(d) FROM bars").fetchone()[0]
+    finally:
+        if own:
+            conn.close()
+    have = _iso_day(have) if have else have
+    target = _iso_day(target or dt.date.today().isoformat())
+    days = None
+    if have:
+        m = current()
+        fn = getattr(m, "trading_days", None)
+        if fn is not None:
+            try:
+                days = fn(_next_day(have), target)
+            except Exception as e:                # noqa: BLE001  (取历失败 -> 判不了, 不是没到)
+                log.warning("ready_for: 交易日历取失败 (%s), 判定为 UNKNOWN", str(e)[:120])
+                days = None
+    out = _ready_verdict(have, target, days)
+    out["have"], out["target"] = have, target
+    return out
+
+
 def update_daily(codes: list | None = None, lookback_days: int = 150) -> int:
     """增量更新。A 股 (Tushare 按日路径) 与 美股/旧源 (逐股回看) 走两条腿。
 
@@ -813,6 +909,10 @@ if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cmd = sys.argv[1] if len(sys.argv) > 1 else "backfill"
+    if cmd == "ready":                      # 退出码 0=已到 / 1=还没到 / 2=判不了 (见 ready_for)
+        v = ready_for(sys.argv[2] if len(sys.argv) > 2 else None)
+        print(f"ready={v['ready']} {v['reason']}")
+        raise SystemExit(v["code"])
     if cmd == "backfill":
         print(backfill())
     elif cmd == "update":
