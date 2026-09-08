@@ -2,7 +2,8 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta id="metaThemeColor" name="theme-color" content="#0b1220" />
 <title>FairValpha · 美股工作台</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
@@ -13,17 +14,25 @@
 <script src="biweekly_data.js"></script>
 <script src="watch_data.js"></script>
 <script src="sentiment_data.js"></script>
-<script src="leftside_shared.js"></script>
+<!-- ?v= 是缓存指纹: HTML 已由 nginx 置 no-cache, 但本文件走长缓存 —— 改了 leftside_shared.js
+     必须同时把这个日期戳往上抬一格, 否则手机会继续跑旧版 (2026-09-07 验收就踩了这个坑)。 -->
+<script src="leftside_shared.js?v=20260907"></script>
 <style>
   :root{
     --bg:#0b1220; --card:#111a2e; --border:#1e2a44; --text:#e5e7eb; --dim:#9fb4d6; --muted:#7e93b8;
     --head:#0e1830; --rowhover:#16223c; --input:#0e1830; --inputborder:#26344f; --gridline:#1b2640;
     --drawer:#0b1220;
+    /* 状态色 (老板 2026-09-07 拍板 B 案): 状态本身用红绿 —— 入选/达标/通过=绿, 未过/停发=红。
+       为了不和「红涨绿跌」的涨跌数字撞车: 状态一律是实心药丸 (淡底 + 同色字), 涨跌永远是裸色数字, 两者不同形。
+       琥珀 (告警) 只允许出现在整幅横幅 #staleBanner/#histBanner, 不进表格单元格。 */
+    --ok:#3ddc97; --ok-bg:rgba(61,220,151,.12); --bad:#ff5c5c; --bad-bg:rgba(255,92,92,.12);
+    --tabbar-h:56px; --sab:env(safe-area-inset-bottom,0px);
   }
   body.light{
     --bg:#eef2f8; --card:#ffffff; --border:#d7e0ee; --text:#0f172a; --dim:#334155; --muted:#64748b;
     --head:#eaf0f8; --rowhover:#eaf1fb; --input:#ffffff; --inputborder:#cbd5e1; --gridline:#e6ecf5;
     --drawer:#f6f8fc;
+    --ok:#0c8a54; --ok-bg:rgba(12,138,84,.12); --bad:#c22525; --bad-bg:rgba(194,37,37,.10);
   }
   body { background:var(--bg); color:var(--text); font-family: -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; transition:background .25s,color .25s; }
   .card { background:var(--card); border:1px solid var(--border); border-radius:14px; }
@@ -31,8 +40,7 @@
   th.sortable:hover { color:#93c5fd; }
   tbody tr:hover { background:var(--rowhover) !important; cursor:pointer; }
   .badge { padding:2px 8px; border-radius:9999px; font-size:12px; font-weight:600; white-space:nowrap; }
-  .tag-strong { background:rgba(34,197,94,.15); color:#22a558; border:1px solid rgba(34,197,94,.4); }
-  body:not(.light) .tag-strong { color:#4ade80; }
+  .tag-strong { background:var(--ok-bg); color:var(--ok); border:1px solid var(--ok-bg); }
   .tag-warn   { background:rgba(245,158,11,.15); color:#b45309; border:1px solid rgba(245,158,11,.4); }
   body:not(.light) .tag-warn { color:#fbbf24; }
   .tag-watch  { background:rgba(148,163,184,.18); color:#64748b; border:1px solid rgba(148,163,184,.35); }
@@ -87,15 +95,17 @@
   .meterbg{ background:var(--gridline); border-radius:4px; height:6px; flex:1; }
   .meterfill{ height:100%; border-radius:4px; }
   .note-warn{ border-left:3px solid #f59e0b; background:rgba(245,158,11,.07); }
-  .note-good{ border-left:3px solid #22c55e; background:rgba(34,197,94,.07); }
+  .note-good{ border-left:3px solid var(--ok); background:var(--ok-bg); }
   .note-info{ border-left:3px solid #64748b; background:rgba(148,163,184,.08); }
   @media (max-width:640px){ th,td{ padding:6px 6px; font-size:12px; } }
 
-  /* ===== 终端风皮肤 (TV) + 作战台样式 ===== */
-  :root{ --bg:#131722; --card:#1e222d; --border:#2a2e39; --text:#d1d4dc; --dim:#b2b5be; --muted:#787b86;
-    --head:#1e222d; --rowhover:#2a2e39; --input:#2a2e39; --inputborder:#363a45; --gridline:#2a2e39; --drawer:#131722; }
-  body.light{ --bg:#ffffff; --card:#ffffff; --border:#e0e3eb; --text:#131722; --dim:#434651; --muted:#787b86;
-    --head:#f8f9fd; --rowhover:#f0f3fa; --input:#ffffff; --inputborder:#d1d4dc; --gridline:#e0e3eb; --drawer:#f8f9fd; }
+  /* ===== 终端风皮肤 (TV) + 作战台样式 =====
+     ❗ 2026-09-07 GM 裁决 (老板: "海军蓝挺好的"): 原本这里还有一套 :root/body.light,
+     把上面海军蓝令牌 (#0b1220/#111a2e/#1e2a44) 盖成了 TradingView 灰蓝 (#131722/#1e222d),
+     导致工作台与子站 (/lab/ /rightside/ /targets/, 共用 fv-shell.css) 两套深色肉眼可辨。
+     已删除那两块令牌覆盖 —— 全站统一海军蓝。TV 皮肤其余部分 (强调色 #2962ff、
+     字号、圆角、行高、滚条) 全部保留。令牌真值只在本文件顶部 :root/body.light 一处,
+     改色必须同时改 stock-core/dashboard/fv-shell.css, 别再引第二套。 */
   body{ font-size:13.5px; }
   .card{ border-radius:6px; }
   .card[style*="border-color"]{ border-color:var(--border)!important; }
@@ -114,18 +124,29 @@
   ::-webkit-scrollbar-thumb{ background:#4a4e59; }
   body.light ::-webkit-scrollbar-thumb{ background:#c1c4cd; }
   /* 作战台 (功能保留, 动效克制) */
-  .deckGrid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:0; }
-  .deckCell{ padding:0 18px; border-left:1px solid var(--gridline); }
+  /* 作战台 2026-09-07 瘦身 (老板: 只留 数据日期/机会温度/试仓等级, 整卡再小一点): 字号与内边距较原版小 25%~30% */
+  .deckGrid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:0; }
+  .deckCell{ padding:0 14px; border-left:1px solid var(--gridline); }
   .deckCell:first-child{ padding-left:0; border-left:0; }
-  .statK{ font-size:11.5px; color:var(--muted); margin-bottom:2px; }
-  .statV{ font-size:24px; font-weight:700; line-height:1.2; font-variant-numeric:tabular-nums; margin:2px 0 4px; }
+  .statK{ font-size:10.5px; color:var(--muted); margin-bottom:1px; }
+  .statV{ font-size:17px; font-weight:700; line-height:1.15; font-variant-numeric:tabular-nums; margin:1px 0 2px; }
   .statV.grad{ color:#5aa2ff; }
-  .statV small{ font-size:13px; font-weight:500; color:var(--muted); }
-  .dpill{ display:inline-block; font-size:11.5px; font-weight:600; padding:2px 11px; border-radius:100px; margin-top:5px; }
-  .dpill.ok{ background:rgba(61,220,151,.10); color:#3ddc97; }
+  .statV small{ font-size:11px; font-weight:500; color:var(--muted); }
+  #deckCard{ padding:9px 12px; }
+  #deckCard .deckHd{ font-size:10px; margin-bottom:5px; }
+  #deckCard .typeline{ font-size:11.5px; margin-top:7px; }
+  #deckMore>summary{ font-size:11px; color:var(--muted); cursor:pointer; user-select:none; margin-top:6px; }
+  #deckMore>summary:hover{ color:var(--dim); }
+  .dpill{ display:inline-block; font-size:10.5px; font-weight:600; padding:1.5px 9px; border-radius:100px; margin-top:3px; }
+  .dpill.ok{ background:var(--ok-bg); color:var(--ok); }
   .dpill.mid{ background:rgba(245,180,60,.10); color:#f5b43c; }
-  .dpill.no{ background:rgba(255,92,92,.10); color:#ff5c5c; }
-  body.light .dpill.ok{ color:#0c8a54; } body.light .dpill.mid{ color:#9a6a00; } body.light .dpill.no{ color:#c22525; }
+  .dpill.no{ background:var(--bad-bg); color:var(--bad); }
+  .dpill.mute{ background:var(--input); color:var(--muted); }
+  body.light .dpill.mid{ color:#9a6a00; }
+  /* 行内变体: 表格/芯片里的状态药丸 (去掉上边距, 与同行数字基线对齐) */
+  .dpill.inl{ margin-top:0; vertical-align:baseline; font-size:11px; padding:1px 8px; }
+  /* 大号变体: 回测统计块那种大字位上的状态药丸 */
+  .dpill.lg{ margin-top:0; font-size:15px; padding:2px 10px; line-height:1.5; }
   .fchip{ display:inline-block; font-size:12px; padding:3px 11px; border-radius:100px; background:var(--input);
     border:1px solid var(--inputborder); margin:5px 6px 0 0; }
   .spark{ color:#5aa2ff; }
@@ -143,6 +164,9 @@
   #sideNav a{ display:block; padding:7px 10px; border-radius:6px; color:var(--dim); font-size:13px;
     text-decoration:none; }
   #sideNav a:hover{ background:var(--rowhover); color:var(--text); }
+  /* data-soon: 页面还没上线的子站 (如 /strategies/), 桌面侧栏先不露;
+     手机"更多"抽屉里由 SITE_SOON / navSites() 同步过滤, 上线后两处一起摘 */
+  #sideNav a[data-soon], #sideNav a[data-hidden]{ display:none; }
   #navToggle{ position:fixed; left:132px; top:50%; transform:translateY(-50%); z-index:60;
     width:14px; height:72px; padding:0; border:1px solid var(--inputborder); border-left:0;
     border-radius:0 8px 8px 0; background:var(--input); color:var(--muted); cursor:pointer;
@@ -176,14 +200,14 @@
   #tvHeat{ height:300px; }
   .tradingview-widget-container{ height:100%; }
 
-  /* ===== 详情弹窗标签页 ===== */
-  #dTabs{ display:flex; flex-wrap:wrap; gap:5px; margin-bottom:10px; }
-  #dTabs .dtabchip{ display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:3px 9px;
+  /* ===== 详情弹窗: 股票标签条 (#dStockTabs) 与页签导航 (#dTabs) ===== */
+  #dStockTabs{ display:flex; flex-wrap:wrap; gap:5px; margin-bottom:10px; }
+  #dStockTabs .dtabchip{ display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:3px 9px;
     border-radius:5px; background:var(--input); border:1px solid var(--inputborder); color:var(--dim);
     cursor:pointer; user-select:none; }
-  #dTabs .dtabchip.on{ background:#2962ff; border-color:#2962ff; color:#fff; }
-  #dTabs .dtabchip .x{ opacity:.6; font-size:11px; padding:0 1px; }
-  #dTabs .dtabchip .x:hover{ opacity:1; }
+  #dStockTabs .dtabchip.on{ background:#2962ff; border-color:#2962ff; color:#fff; }
+  #dStockTabs .dtabchip .x{ opacity:.6; font-size:11px; padding:0 1px; }
+  #dStockTabs .dtabchip .x:hover{ opacity:1; }
   .dnavbtn{ border:1px solid var(--inputborder); background:var(--input); color:var(--dim);
     border-radius:5px; padding:2px 9px; cursor:pointer; font-size:13px; }
   .dnavbtn:hover{ color:var(--text); }
@@ -244,10 +268,6 @@
   #sideNav a[draggable="true"]::after{ content:"⠿"; float:right; opacity:.18; font-size:11px; }
   #sideNav a[draggable="true"]:hover::after{ opacity:.75; }
   section:hover > .secHandle{ opacity:.9; }
-  #dragHint{ position:fixed; bottom:18px; left:50%; transform:translateX(-50%); z-index:65;
-    background:var(--card); color:var(--text); border:1px solid rgba(41,98,255,.45);
-    border-radius:10px; padding:10px 14px; font-size:13px; display:flex; gap:10px;
-    align-items:center; box-shadow:0 10px 30px rgba(0,0,0,.4); max-width:92vw; }
 
   /* ===== 侧栏控件 v3: 等宽大按钮 ===== */
   #navCtrls{ gap:7px; }
@@ -261,28 +281,162 @@
   #nvMkts a:hover{ color:var(--text); }
   #nvMkts a.on{ background:#2962ff; color:#fff; font-weight:600; }
   #navCtrls select{ box-sizing:border-box; border-radius:8px; padding:7px 8px; font-size:12.5px; }
+
+  /* ===== 状态色 B 案 (老板 2026-09-07 拍板 + GM 09-07 验收裁决) =====
+     铁律: 状态 = 实心药丸 .dpill(.ok/.mid/.no/.mute); 涨跌与收益 = 裸色数字 .pos/.neg。
+     状态绿红 (--ok #3ddc97 / --bad #ff5c5c) 与涨跌绿红 (.pos #f87171 / .neg #4ade80) **刻意取不同值**,
+     形状之外再加一道色相差 (色弱用户与缩略图下也分得开)。同一套值见 dashboard/fv-shell.css。
+     .fv-ok/.fv-bad 是旧的"裸色判定数字"写法, 判定已全部改成药丸, 这两条只留作兼容, 新代码别再用。 */
+  .fv-ok{ color:var(--ok); }
+  .fv-bad{ color:var(--bad); }
+  /* 概览统计条: 计数用中性令牌 (--dim 标签 / --text 数字), 只有带符号的数字才走 .pos/.neg。
+     禁止再往这里写死 Tailwind 色值 —— 白天主题下会失配。 */
+  #ovStrip .ovk{ color:var(--dim); }
+  #ovStrip .ovv{ font-variant-numeric:tabular-nums; font-weight:600; }
+  #ovStrip .ovv.n{ color:var(--text); }
+  /* 板块偏好条: "科技 +1.6%" 是涨跌幅 → 裸色数字, 不做药丸 (药丸只装状态) */
+  .secchip{ display:inline-block; margin-right:10px; white-space:nowrap; color:var(--dim); font-size:12px; }
+  .secchip b{ font-variant-numeric:tabular-nums; }
+  /* 详情抽屉关闭键: 触屏最小点击区 44×44 (验收单 §9) */
+  #closeDrawer{ width:44px; height:44px; padding:0; display:inline-flex; align-items:center;
+    justify-content:center; border-radius:8px; flex:none; }
+  #closeDrawer:active{ background:var(--rowhover); }
+
+  /* ===== 📱 手机导航 (<960px) —— design/mobile_nav_spec.md §1-§5 =====
+     桌面 (≥960px) 一律不渲染/不占位: #tabBar 与抽屉只在断点内 display, 侧栏与页头六控件保持原样。 */
+  svg.ico{ width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.6;
+    stroke-linecap:round; stroke-linejoin:round; flex:none; }
+  #tabBar{ display:none; }
+  #fvSheet{ display:none; }
+  .h1short{ display:none; }
+  @media (max-width:960px){
+    body{ padding-bottom:calc(var(--tabbar-h) + var(--sab)); }
+    /* 页头实测 75px (第一行 48 + 第二行 26 + 分隔线), 锚点余量取 80: 板块标题落在页头之下且完整可见 */
+    html{ scroll-padding-top:80px; scroll-padding-bottom:calc(var(--tabbar-h) + var(--sab)); }
+    section{ scroll-margin-top:80px; }
+    /* --- 页头折叠: 第一行 48px sticky + 第二行 ≤24px --- */
+    header{ position:sticky; top:0; z-index:40; background:var(--card); margin:0 -1rem 8px;
+      padding:0 10px; border-bottom:1px solid var(--border); }
+    .hdr-row1{ height:48px; flex-wrap:nowrap!important; gap:6px!important; }
+    .hdr-row1 > .flex-1{ display:none; }
+    .hdr-row1 h1{ order:-1; flex:1 1 auto; min-width:0; font-size:15px!important;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .h1full{ display:none; }
+    .h1short{ display:inline; }
+    /* 老板要保留国旗 (🇨🇳/🇺🇸, 覆盖规格里"不带国旗"的写法), 所以改为压缩分段的内边距与字号,
+       让 h1 在 375px 下仍有 ≥180px 可用宽度 (验收单 §9 页头两行 + 标题不被挤没)。 */
+    #mktTabs{ order:-2; flex:none; gap:0!important; }
+    #mktTabs .segbtn{ display:inline-flex; align-items:center; min-height:36px; padding:0 5px;
+      font-size:11.5px; border-radius:0; white-space:nowrap; }
+    #mktTabs .segbtn:first-child{ margin-right:1px; }
+    #mktTabs .segbtn:first-child{ border-radius:6px 0 0 6px; }
+    #mktTabs .segbtn:last-child{ border-radius:0 6px 6px 0; }
+    #langBtn, #themeBtn, #authBtn, #dateScrub{ display:none!important; }
+    #refreshBtn{ order:1; width:44px; height:44px; padding:0; font-size:0; border:0;
+      background:transparent; color:var(--dim); flex:none; }
+    #refreshBtn::before{ content:"↻"; font-size:20px; line-height:44px; }
+    .hdr-row2{ min-height:26px; margin-top:0!important; }
+    #hdrMeta{ display:none; }
+    #ovMini{ overflow:hidden; text-overflow:ellipsis; }
+    body.hasDates .hdr-row2 #dateSel{ display:inline-block; height:26px; padding:2px 6px;
+      font-size:11.5px; flex:none; }
+    #searchCard input{ height:40px; font-size:16px; }
+    /* 作战台三格在窄屏折成两列: 第二行首格也要去掉左框线 */
+    .deckGrid{ grid-template-columns:1fr 1fr; gap:8px 0; }
+    .deckCell:nth-child(odd){ padding-left:0; border-left:0; }
+    body.hasDates .hdr-row2 #dateSel{ height:26px; padding:1px 4px; }
+    #colPanel{ width:auto; max-width:calc(100vw - 24px); }
+    /* --- 底部标签栏 --- */
+    #tabBar{ display:flex; position:fixed; left:0; right:0; bottom:0;
+      height:calc(var(--tabbar-h) + var(--sab)); padding-bottom:var(--sab);
+      background:var(--card); border-top:1px solid var(--border); z-index:47; }
+    #tabBar .tab{ flex:1 1 0; min-width:0; height:var(--tabbar-h); border:0; padding:0;
+      background:transparent; color:var(--muted); font-family:inherit; font-size:10.5px;
+      display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
+      cursor:pointer; }
+    #tabBar .tab span{ max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    #tabBar .tab.on{ color:#2962ff; }
+    #tabBar .tab:active{ background:var(--rowhover); }
+    /* --- 底部抽屉 (更多 / 账号) --- */
+    #fvSheet{ display:block; position:fixed; inset:0; z-index:46; pointer-events:none; }
+    #fvSheet .fvScrim{ position:absolute; left:0; right:0; top:0;
+      bottom:calc(var(--tabbar-h) + var(--sab)); background:rgba(0,0,0,.45); pointer-events:auto; }
+    #fvSheet .fvBody{ position:absolute; left:0; right:0; bottom:calc(var(--tabbar-h) + var(--sab));
+      max-height:78vh; overflow-y:auto; overscroll-behavior:contain; pointer-events:auto;
+      background:var(--card); border-top:1px solid var(--border); border-radius:12px 12px 0 0;
+      box-shadow:0 -10px 30px rgba(0,0,0,.3); animation:fvUp .2s ease; }
+    @keyframes fvUp{ from{ transform:translateY(100%); } to{ transform:none; } }
+    #fvSheet .fvGrab{ width:36px; height:4px; border-radius:2px; background:var(--inputborder);
+      margin:8px auto 2px; }
+    #fvSheet .fvGh{ display:flex; justify-content:space-between; align-items:center; gap:8px;
+      padding:10px 14px 4px; font-size:11px; letter-spacing:.06em; color:var(--muted); }
+    #fvSheet .fvGh .hint{ letter-spacing:0; }
+    #fvSheet .fvGh .saved{ letter-spacing:0; color:#2962ff; opacity:0; transition:opacity .2s; }
+    #fvSheet .fvGh .saved.show{ opacity:1; }
+    #fvSheet .fvRow{ display:flex; align-items:center; height:48px; padding:0 8px 0 0;
+      border-bottom:1px solid var(--border); color:var(--text); font-size:14px; background:var(--card);
+      cursor:pointer; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
+    #fvSheet .fvList .fvRow:last-child{ border-bottom:0; }
+    #fvSheet .fvRow .handle{ width:44px; height:48px; display:grid; place-items:center;
+      color:var(--muted); touch-action:none; cursor:grab; }
+    #fvSheet .fvRow .ric{ width:22px; color:var(--dim); margin-right:10px; }
+    #fvSheet .fvRow .ric.pad{ margin-left:14px; }
+    #fvSheet .fvRow .lbl{ flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    #fvSheet .fvRow .sub{ color:var(--muted); font-size:11.5px; margin-left:6px; }
+    #fvSheet .fvRow .chev{ color:var(--muted); width:16px; height:16px; }
+    #fvSheet .fvRow.lift{ box-shadow:0 8px 24px rgba(0,0,0,.35); transform:scale(1.02);
+      border-radius:8px; border-color:transparent; position:relative; z-index:2; }
+    #fvSheet .fvList.reordering{ touch-action:none; }
+    #fvSheet .fvSet{ display:flex; align-items:center; gap:10px; min-height:48px; padding:0 14px;
+      border-bottom:1px solid var(--border); font-size:14px; }
+    #fvSheet .fvSet .k{ flex:1; }
+    #fvSheet .fvSet .segbtn{ min-height:36px; min-width:96px; }
+    #fvSheet .fvSet select{ min-height:36px; min-width:120px; font-size:13px; }
+    #fvSheet .fvSet .v{ color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+    #fvSheet .fvSet #mbMkts{ display:flex; border:1px solid var(--inputborder); border-radius:8px;
+      overflow:hidden; }
+    #fvSheet .fvSet #mbMkts a{ min-width:56px; text-align:center; padding:9px 10px; font-size:12.5px;
+      color:var(--dim); background:var(--input); text-decoration:none; }
+    #fvSheet .fvSet #mbMkts a.on{ background:#2962ff; color:#fff; font-weight:600; }
+    #fvSheet .fvBig{ display:block; width:calc(100% - 28px); margin:12px 14px 16px; min-height:44px;
+      border:1px solid var(--inputborder); background:var(--input); color:var(--text);
+      border-radius:8px; font-size:14px; font-weight:600; font-family:inherit; cursor:pointer; }
+    #fvSheet .fvAv{ width:36px; height:36px; border-radius:50%; background:#2962ff; color:#fff;
+      font-weight:700; display:grid; place-items:center; margin-right:12px; flex:none; }
+  }
+  @media (max-width:640px){
+    /* 免责声明折叠 (点一下展开, 不弹窗): line-clamp 卡在整 2 行 —— 行高固定 1.5, 永远切不出半行字
+       (旧写法 max-height:2.7em 配 leading-snug 会把第 2 行切掉一小截);
+       底部 mask 渐隐 = "下面还有" 的视觉提示, 蒙的是文字本身, 因此黑夜/白天两套主题都对。 */
+    [data-i18n-html="disclaimer"]{ cursor:pointer; line-height:1.5!important; overflow:hidden;
+      display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2;
+      -webkit-mask-image:linear-gradient(to bottom, #000 58%, rgba(0,0,0,.3));
+              mask-image:linear-gradient(to bottom, #000 58%, rgba(0,0,0,.3)); }
+    [data-i18n-html="disclaimer"].open{ display:block; -webkit-line-clamp:none; overflow:visible;
+      -webkit-mask-image:none; mask-image:none; }
+  }
 </style>
 </head>
 <body class="min-h-screen">
 <button id="navToggle" title="收起/展开导航" aria-label="toggle nav">⋮</button>
-<nav id="sideNav"><a href="#deckCard" data-i18n="nav_state">市场状态</a><a href="#wlCard" data-i18n="nav_wl">自选观察</a><a href="#qlCard" data-i18n="nav_ql">优质公司</a><a href="#btCard" data-i18n="nav_bt">信号回测</a><a href="#indCard" data-i18n="nav_ind">板块景气</a><a href="#tblCard" data-i18n="nav_tbl">候选主表</a><a href="#jnCard" data-i18n="nav_jn">模拟组合</a><a href="#tgtCard" data-i18n="nav_tgt">🎯 分析师目标</a></nav>
+<nav id="sideNav"><a href="#deckCard" data-i18n="nav_state">市场状态</a><a href="#wlCard" data-i18n="nav_wl">自选观察</a><a href="#qlCard" data-i18n="nav_ql">优质公司</a><a href="#btCard" data-i18n="nav_bt">信号回测</a><a href="#indCard" data-i18n="nav_ind">板块景气</a><a href="#tblCard" data-i18n="nav_tbl">候选主表</a><a href="#jnCard" data-i18n="nav_jn">模拟组合</a><a href="#tgtCard" data-i18n="nav_tgt">🎯 分析师目标</a><a href="https://fairvalpha.com/data/" target="_blank" rel="noopener" data-i18n="nav_data">数据总览</a></nav>
 <div class="max-w-[1900px] mx-auto px-4 md:px-6 py-5">
 
   <!-- 标题 -->
   <header class="mb-3">
-    <div class="flex items-center flex-wrap gap-x-3 gap-y-2">
-      <h1 class="text-xl font-bold text-white whitespace-nowrap" data-i18n="title">美股 · 「左侧支撑位」筛选与监控台</h1>
+    <div class="hdr-row1 flex items-center flex-wrap gap-x-3 gap-y-2">
+      <h1 class="text-xl font-bold text-white whitespace-nowrap"><span class="h1full" data-i18n="title">FairValpha · 美股工作台</span><span class="h1short" data-i18n="title_short">美股工作台</span></h1>
       <div class="flex-1"></div>
-      <span class="flex items-center gap-1" id="mktTabs"><a href="https://fairvalpha.com/a/" class="segbtn">🇨🇳 A股</a> <a href="https://fairvalpha.com/us/" class="segbtn on">🇺🇸 美股</a></span>
+      <span class="flex items-center gap-1" id="mktTabs"><a href="https://fairvalpha.com/a/" data-i18n="mkt_a" class="segbtn">🇨🇳 A股</a> <a href="https://fairvalpha.com/us/" data-i18n="mkt_us" class="segbtn on">🇺🇸 美股</a></span>
       <select id="dateSel" class="hidden" data-i18n-title="date_sel_title" title="回看历史扫描结果"></select><span id="dateScrub" class="hidden" data-i18n-title="date_sel_title" title="回看历史扫描结果"><span id="dsTrack"><span id="dsBars"></span></span><span id="dsLabel">—</span></span>
       <button id="refreshBtn" class="segbtn" title="拉取最新已发布数据（重新扫描需运行本地更新脚本）" data-i18n="refresh_btn">🔄 刷新数据</button>
       <button id="langBtn" class="segbtn" title="中文 / English">EN</button>
-      <button id="themeBtn" class="segbtn" title="点击切换：白天 / 黑夜 / 跟随系统">🌙 黑夜</button>
+      <button id="themeBtn" class="segbtn" data-i18n-title="theme_btn_title" title="点击切换：白天 / 黑夜 / 跟随系统">🌙 黑夜</button>
       <button id="authBtn" class="segbtn">👤 登录</button>
     </div>
-    <div class="flex items-center justify-between flex-wrap gap-x-4 gap-y-0.5 mt-1 text-xs text-slate-400">
+    <div class="hdr-row2 flex items-center justify-between flex-wrap gap-x-4 gap-y-0.5 mt-1 text-xs text-slate-400">
       <div class="flex items-center gap-x-3 flex-wrap"><span id="ovMini"></span><span class="hidden 2xl:inline" data-i18n="subtitle">全美股(市值≥$1亿) · 高景气板块内 · 回踩支撑/接近前低的左侧机会 · 技术 × 基本面交叉打分</span></div>
-      <div class="flex items-center gap-x-3 flex-wrap"><span><span data-i18n="updated">最后更新：</span><span id="updatedAt" class="text-slate-200">—</span></span><span data-i18n="datasource">数据源：Yahoo Finance（全美股 · GICS 板块）· 价格单位 USD</span></div>
+      <div id="hdrMeta" class="flex items-center gap-x-3 flex-wrap"><span><span data-i18n="updated">最后更新：</span><span id="updatedAt" class="text-slate-200">—</span></span><span data-i18n="datasource">数据源：Yahoo Finance（全美股 · GICS 板块）· 价格单位 USD</span></div>
     </div>
   </header>
 
@@ -304,14 +458,15 @@
     <div id="gsRes" class="hidden"></div>
   </section>
   <section id="deckCard" class="card p-3 mb-2">
-    <div class="text-[11px] font-semibold tracking-widest mb-2" style="color:var(--muted)" data-i18n="deck_title">今日作战台</div>
+    <div class="deckHd font-semibold tracking-widest" style="color:var(--muted)" data-i18n="deck_title">今日作战台</div>
     <div id="deckMain"></div>
-    <div id="deckMoreBody" class="mt-2"></div>
+    <details id="deckMore"><summary data-i18n="deck_more">市场状态详情（机会温度计 / 风险偏好）</summary>
+    <div id="deckMoreBody" class="mt-2"></div></details>
   </section>
   <section class="card px-3 py-1.5 mb-2 text-[12px] hidden flex-wrap items-center gap-x-5 gap-y-1">
     <span class="text-slate-400"><span data-i18n="ov_scanned">今日扫描数</span> <b id="ovScanned" class="text-white">—</b></span>
     <span class="text-slate-400"><span data-i18n="ov_hit">命中候选数</span> <b id="ovHit" class="text-sky-300">—</b></span>
-    <span class="text-slate-400"><span data-i18n="ov_inds">入选景气板块</span> <b id="ovInds" class="text-emerald-300">—</b></span>
+    <span class="text-slate-400"><span data-i18n="ov_inds">入选景气板块</span> <b id="ovInds" style="color:var(--ok)">—</b></span>
     <span class="text-slate-400"><span data-i18n="ov_date">数据日期</span> <b id="ovDate" class="text-white">—</b></span>
   </section>
   <!-- 派生统计条 -->
@@ -453,7 +608,7 @@
       <h4 class="sec-title" data-i18n="tgt_title">🎯 分析师目标 — 一年期目标价 Min/Avg/Max 全线高于现价</h4>
       <div class="text-xs" style="color:var(--muted)"><a class="text-sky-400 hover:underline" href="https://fairvalpha.com/targets/" target="_blank" rel="noopener" data-i18n="tgt_open">全屏打开 ↗</a> · <a class="text-sky-400 hover:underline" href="https://fairvalpha.com/targets/watchlist.txt" data-i18n="tgt_wl">下载TV自选列表</a></div>
     </div>
-    <iframe id="tgtFrame" src="https://fairvalpha.com/targets/index.html" loading="lazy" title="Analyst Targets" style="width:100%;height:78vh;border:0;border-radius:8px;background:#0d1017"></iframe>
+    <iframe id="tgtFrame" src="https://fairvalpha.com/targets/index.html" loading="lazy" title="Analyst Targets" style="width:100%;height:78vh;border:0;border-radius:8px;background:var(--bg)"></iframe>
   </section>
 
   <!-- 权重实验室 -->
@@ -556,7 +711,8 @@
   </div>
 <aside id="drawer" class="drawer fixed top-0 right-0 h-full w-full md:w-[68%] lg:w-[60%] border-l z-50 translate-x-full overflow-y-auto" style="background:var(--drawer);border-color:var(--border)">
   <div class="p-5">
-    <div id="dTabs"></div>
+    <!-- 股票标签条 (多股并看): dtabsRender 写入; 与下方页签导航 #dTabs 分开 id -->
+    <div id="dStockTabs"></div>
     <div class="flex items-start justify-between mb-2">
       <div>
         <h3 id="dTitle" class="text-xl font-bold text-white">—</h3>
@@ -684,10 +840,20 @@
   const T = {
     zh:{
       title:"FairValpha · 美股工作台",
+      page_title:"FairValpha · 美股工作台",
+      theme_light:"☀️ 白天", theme_dark:"🌙 黑夜", theme_auto:"🖥️ 跟随系统",
+      theme_btn_title:"点击切换：白天 / 黑夜 / 跟随系统",
+      drag_handle:"按住拖动排序", dtab_prev:"上一个 (←)", dtab_next:"下一个 (→)",
       subtitle:"全美股(市值≥$1亿) · 高景气板块内 · 回踩支撑/接近前低的左侧机会 · 技术 × 基本面交叉打分",
       updated:"最后更新：", datasource:"数据源：Yahoo Finance（全美股 · GICS 板块）· 价格单位 USD",
       disclaimer:'⚠️ <b>免责声明</b>：本系统仅对美股做技术/基本面数据的自动化整理与形态筛选，<b>不构成任何投资建议</b>。“左侧买入”是在下跌中、支撑确认前进场，风险天然更高（可能继续下跌或破位）。价格单位为美元(USD)。所有标的需<b>人工复核</b>，使用者自负盈亏与风控。',
-      ov_scanned:"今日扫描数", ov_hit:"命中候选数", ov_inds:"入选景气板块", ov_date:"数据日期",
+      ov_scanned:"今日扫描数", ov_hit:"命中候选数", ov_inds:"入选景气板块",       ov_date:"数据日期",
+      deck_temp:"机会温度", deck_lvl:"试仓等级", title_short:"美股工作台", mkt_a:"🇨🇳 A股", mkt_us:"🇺🇸 美股",
+      tab_deck:"作战台", tab_cands:"候选", tab_bt:"回测", tab_more:"更多", tab_acct:"账号",
+      more_sections:"板块顺序", more_reorder_hint:"长按拖动排序", reorder_done:"顺序已保存",
+      more_settings:"设置", more_theme:"主题", more_lang:"语言", more_date:"回看日期", more_market:"市场",
+      more_sites:"其他工作台", site_targets:"分析师目标", site_lab:"量化工作台", site_rightside:"右侧工作台", site_strategies:"策略库",
+      acct_synced:"已同步", acct_pending:"{n} 条待同步", acct_logout:"退出登录", acct_local:"本机模式 · 未启用云同步",
       sec_board:"板块景气榜", sec_hint:"点击板块可筛选主表 · 绿色=入选", seg_bar:"条形图", seg_tree:"矩形树图",
       wlab_title:"综合分权重实验室", wlab_hint:"拖动滑块即时重算「综合分」并重新排序（不改变原始命中）",
       wlab_reset:"恢复默认 50/30/20", w_tech:"技术面权重", w_fund:"基本面权重", w_prosp:"景气权重",
@@ -726,7 +892,7 @@
       prosperity_total:"景气总分", selected_paren:"(入选)", prosperity_score_l:"景气分",
       // 标签
       tag_strong:"✅ 强左侧", tag_weak:"⚠️ 技术好但基本面弱", tag_watch:"🔎 观察", tag_dip:"🪸 深跌抄底",
-      tag_nearstrong:"☑️ 次强左侧", tag_watch_tech:"🔎 观察·技术弱", tag_watch_nodata:"🔎 观察·缺数据", tag_watch_cold:"🔎 观察·景气冷", tag_fast:"⚡ 深跌·快弹", bt_tr:"波动目标tR", nav_tgt:"分析师目标", tgt_title:"🎯 分析师目标 — 一年期目标价 Min/Avg/Max 全线高于现价", tgt_open:"全屏打开 ↗", tgt_wl:"下载TV自选列表",
+      tag_nearstrong:"☑️ 次强左侧", tag_watch_tech:"🔎 观察·技术弱", tag_watch_nodata:"🔎 观察·缺数据", tag_watch_cold:"🔎 观察·景气冷", tag_fast:"⚡ 深跌·快弹", bt_tr:"波动目标tR", nav_tgt:"分析师目标", nav_data:"数据总览", tgt_title:"🎯 分析师目标 — 一年期目标价 Min/Avg/Max 全线高于现价", tgt_open:"全屏打开 ↗", tgt_wl:"下载TV自选列表",
       bt_reach5:"曾达+5%", bt_reach5_sub:"含后来止损/到期的", bt_col_mfe:"MFE中位/75分",
       bt_seg_pending_a:"该标签 ", bt_seg_pending_b:" 笔在途 · 完整窗口需20个交易日, 了结后数字陆续计入",
       bthelp_reach5_t:"曾达+5% (雷达指标)",
@@ -927,10 +1093,20 @@
     },
     en:{
       title:"US Stocks · Left-Side Support Screener",
+      page_title:"FairValpha · US Desk",
+      theme_light:"☀️ Light", theme_dark:"🌙 Dark", theme_auto:"🖥️ System",
+      theme_btn_title:"Click to cycle: Light / Dark / System",
+      drag_handle:"Hold to drag & reorder", dtab_prev:"Previous (←)", dtab_next:"Next (→)",
       subtitle:"All US (mcap ≥ $100M) · within high-prosperity sectors · pullback-to-support / near prior-low setups · technical × fundamental cross-score",
       updated:"Updated: ", datasource:"Source: Yahoo Finance (All US · GICS sectors) · prices in USD",
       disclaimer:'⚠️ <b>Disclaimer</b>: This tool only performs automated organization and pattern screening of technical/fundamental data for US equities and is <b>not investment advice</b>. "Left-side buying" enters during a decline, before support is confirmed, and is inherently higher-risk (price may keep falling or break down). Prices are in USD. Verify every name <b>manually</b>; users bear their own P&amp;L and risk.',
-      ov_scanned:"Scanned today", ov_hit:"Candidates", ov_inds:"Selected sectors", ov_date:"Data date",
+      ov_scanned:"Scanned today", ov_hit:"Candidates", ov_inds:"Selected sectors",       ov_date:"Data date",
+      deck_temp:"Opportunity temp", deck_lvl:"Sizing level", title_short:"US Desk", mkt_a:"🇨🇳 CN", mkt_us:"🇺🇸 US",
+      tab_deck:"Desk", tab_cands:"Picks", tab_bt:"Backtest", tab_more:"More", tab_acct:"Account",
+      more_sections:"Sections", more_reorder_hint:"Long-press to reorder", reorder_done:"Order saved",
+      more_settings:"Settings", more_theme:"Theme", more_lang:"Language", more_date:"Snapshot", more_market:"Market",
+      more_sites:"Other desks", site_targets:"Analyst Targets", site_lab:"Quant Lab", site_rightside:"Right-side Desk", site_strategies:"Strategies",
+      acct_synced:"Synced", acct_pending:"{n} pending", acct_logout:"Sign out", acct_local:"Local mode · cloud sync off",
       sec_board:"Sector Prosperity", sec_hint:"Click a sector to filter · green = selected", seg_bar:"Bar", seg_tree:"Treemap",
       wlab_title:"Composite-Score Weight Lab", wlab_hint:"Drag sliders to recompute the composite score & re-sort (raw hits unchanged)",
       wlab_reset:"Reset to 50/30/20", w_tech:"Technical weight", w_fund:"Fundamental weight", w_prosp:"Prosperity weight",
@@ -966,7 +1142,7 @@
       p_trend:"Trend", p_momentum:"Momentum", p_breadth:"Breadth", p_capital:"Capital", p_fund:"Fund.",
       prosperity_total:"Prosperity", selected_paren:"(selected)", prosperity_score_l:"Prosp.",
       tag_strong:"✅ Strong Left", tag_weak:"⚠️ Tech-strong, Weak Fund.", tag_watch:"🔎 Watch", tag_dip:"🪸 Deep-Dip",
-      tag_nearstrong:"☑️ Near-Strong", tag_watch_tech:"🔎 Watch·Weak Tech", tag_watch_nodata:"🔎 Watch·No Data", tag_watch_cold:"🔎 Watch·Cold Sector", tag_fast:"⚡ Dip·Fast Rebound", bt_tr:"vol-target tR", nav_tgt:"Analyst Targets", tgt_title:"🎯 Analyst Targets — 1-yr Min/Avg/Max all above price", tgt_open:"Open full page ↗", tgt_wl:"Download TV watchlist",
+      tag_nearstrong:"☑️ Near-Strong", tag_watch_tech:"🔎 Watch·Weak Tech", tag_watch_nodata:"🔎 Watch·No Data", tag_watch_cold:"🔎 Watch·Cold Sector", tag_fast:"⚡ Dip·Fast Rebound", bt_tr:"vol-target tR", nav_tgt:"Analyst Targets", nav_data:"Data Hub", tgt_title:"🎯 Analyst Targets — 1-yr Min/Avg/Max all above price", tgt_open:"Open full page ↗", tgt_wl:"Download TV watchlist",
       bt_reach5:"Touched +5%", bt_reach5_sub:"incl. later stopped/expired", bt_col_mfe:"MFE p50/p75",
       bt_seg_pending_a:"", bt_seg_pending_b:" episodes in flight · full 20-day windows required before stats accrue",
       bthelp_reach5_t:"Touched +5% (radar metric)",
@@ -1207,6 +1383,8 @@
   function colLabel(c){ const k=COL_I18N[c.key]; return (k? t(k) : c.label); }
   function applyStaticI18n(){
     document.documentElement.lang = (LANG==="en")?"en":"zh-CN";
+    document.title = t("page_title");
+    try{ applyTheme(); }catch(e){}          // 主题按钮文案 (白天/黑夜/跟随系统) 也随语言切换
     document.querySelectorAll("[data-i18n]").forEach(el=>{ el.textContent=t(el.dataset.i18n); });
     document.querySelectorAll("[data-i18n-html]").forEach(el=>{ el.innerHTML=t(el.dataset.i18nHtml); });
     document.querySelectorAll("[data-i18n-ph]").forEach(el=>{ el.placeholder=t(el.dataset.i18nPh); });
@@ -1288,11 +1466,17 @@
   function effLight(){ return themeMode==="light" || (themeMode==="auto" && mqLight && mqLight.matches); }
   function applyTheme(){
     document.body.classList.toggle("light", effLight());
-    $("#themeBtn").textContent = themeMode==="light" ? "☀️ 白天" : (themeMode==="dark" ? "🌙 黑夜" : "🖥️ 跟随系统");
+    $("#themeBtn").textContent = themeMode==="light" ? t("theme_light") : (themeMode==="dark" ? t("theme_dark") : t("theme_auto"));
     try{ localStorage.setItem(THEME_KEY, themeMode); }catch(e){}
   }
   applyTheme();
+  function syncThemeColor(){                 // 手机状态栏与页面同色 (取当前 --bg 实际值)
+    const m=document.getElementById("metaThemeColor"); if(!m) return;
+    const v=getComputedStyle(document.body).getPropertyValue("--bg").trim(); if(v) m.content=v;
+  }
+  syncThemeColor();   // 首屏就得同步一次: 否则白天模式下手机状态栏还挂着 <meta> 里那条深色静态值
   function redrawAfterTheme(){
+    syncThemeColor();
     renderIndustryChart();
     // 抽屉开着时, 里面的 ECharts 图与 TradingView iframe 还是旧主题, 重开一次刷新
     if(curC && !$("#drawer").classList.contains("translate-x-full")) openDetail(curC, true);
@@ -1315,6 +1499,7 @@
   function renderOverview(){
     const meta = DATA.meta||{};
     $("#updatedAt").textContent = meta.updated_at || dash;
+    if(window.__ovMini) window.__ovMini();
     $("#ovScanned").textContent = isNum(meta.n_scanned)?meta.n_scanned:dash;
     $("#ovHit").textContent = isNum(meta.n_hit)?meta.n_hit:(DATA.candidates.length||dash);
     $("#ovInds").textContent = (meta.selected_industries||[]).length || dash;
@@ -1387,11 +1572,11 @@
       tw.map(r=>`<tr class="border-t border-slate-700/40"><td class="py-0.5 font-mono text-slate-400">${escH(r.d.slice(5))}</td><td class="text-right font-semibold" style="color:${r.score>=60?"#fbbf24":(r.score>=40?"#60a5fa":"#a78bfa")}">${r.score.toFixed(0)}</td><td class="text-right">${r.vix}</td><td class="text-right">${r.spx}</td><td class="text-right">${isNum(r.pct50)?r.pct50.toFixed(0)+"%":dash}</td><td class="pl-2 text-[11px] text-slate-400">${t((PH[r.phase]||["sent_p_calm"])[0])}</td></tr>`).join("");
     const B=S.board_sectors||{}; const MAP={"科技":"Information Technology","可选消费":"Consumer Discretionary","金融":"Financials","通信":"Communication Services","工业":"Industrials","材料":"Materials","能源":"Energy","医疗":"Health Care","必需消费":"Consumer Staples","公用":"Utilities","地产":"Real Estate"};
     $("#sentSec").innerHTML=`<tr class="text-slate-400 text-[11px]"><th class="text-left py-1">${t("sent_c_sector")}</th><th class="text-right">10d</th><th class="text-right">${t("sent_c_rel")}</th><th class="text-right">${t("sent_c_rvol")}</th><th class="text-center">50d/200d</th><th class="text-right">${t("sent_c_board")}</th></tr>`+
-      (S.sectors||[]).map(x=>{ const b=B[MAP[x.name]]||{}; const rc=v=>!isNum(v)?"":(v>0?"text-emerald-300":"text-rose-300"); return `<tr class="border-t border-slate-700/40"><td class="py-0.5">${escH(x.name)} <span class="font-mono text-[10px] text-slate-500">${x.etf}</span></td><td class="text-right ${rc(x.r10)}">${isNum(x.r10)?(x.r10>0?"+":"")+x.r10.toFixed(1)+"%":dash}</td><td class="text-right ${rc(x.rel10)}">${isNum(x.rel10)?(x.rel10>0?"+":"")+x.rel10.toFixed(1)+"%":dash}</td><td class="text-right ${isNum(x.rvol)&&x.rvol>=1.2?"text-amber-300":""}">${isNum(x.rvol)?x.rvol.toFixed(2)+"×":dash}</td><td class="text-center">${x.above50?"✅":"❌"}${x.above200?"✅":"❌"}</td><td class="text-right">${b.n||0}${b.cs?` <span class="text-amber-300">💎${b.cs}</span>`:""}</td></tr>`; }).join("");
+      (S.sectors||[]).map(x=>{ const b=B[MAP[x.name]]||{}; const rc=v=>!isNum(v)?"":(v>0?"pos":"neg");   /* 涨跌幅: 红涨绿跌 (裸色数字) */ return `<tr class="border-t border-slate-700/40"><td class="py-0.5">${escH(x.name)} <span class="font-mono text-[10px] text-slate-500">${x.etf}</span></td><td class="text-right ${rc(x.r10)}">${isNum(x.r10)?(x.r10>0?"+":"")+x.r10.toFixed(1)+"%":dash}</td><td class="text-right ${rc(x.rel10)}">${isNum(x.rel10)?(x.rel10>0?"+":"")+x.rel10.toFixed(1)+"%":dash}</td><td class="text-right ${isNum(x.rvol)&&x.rvol>=1.2?"text-amber-300":""}">${isNum(x.rvol)?x.rvol.toFixed(2)+"×":dash}</td><td class="text-center">${x.above50?"✅":"❌"}${x.above200?"✅":"❌"}</td><td class="text-right">${b.n||0}${b.cs?` <span class="text-amber-300">💎${b.cs}</span>`:""}</td></tr>`; }).join("");
     const val=(S.validation&&S.validation.by_state)?S.validation.by_state.rows:[];
     const base=(S.validation&&S.validation.base&&S.validation.base.rows[0])||null;
     const rows=(base?[Object.assign({},base,{group:"base"})]:[]).concat(val);
-    const cell=r=>r?`<td class="text-right"><span class="${r.median>0?"text-emerald-300":"text-rose-300"}">${r.median>0?"+":""}${r.median.toFixed(1)}%</span> <span class="text-slate-500">${r.pos.toFixed(0)}%</span> <span class="text-rose-400/80">${r.p10.toFixed(1)}%</span>${(r.ci&&r.ci.length===2)?`<div class="text-[10px] text-slate-500">CI ${r.ci[0]>0?"+":""}${r.ci[0].toFixed(1)}…${r.ci[1]>0?"+":""}${r.ci[1].toFixed(1)}%</div>`:""}</td>`:`<td class="text-right">${dash}</td>`;
+    const cell=r=>r?`<td class="text-right"><span class="${r.median>0?"pos":(r.median<0?"neg":"")}">${r.median>0?"+":""}${r.median.toFixed(1)}%</span> <span class="text-slate-500">${r.pos.toFixed(0)}%</span> <span class="${r.p10>0?"pos":(r.p10<0?"neg":"")}">${r.p10.toFixed(1)}%</span>${(r.ci&&r.ci.length===2)?`<div class="text-[10px] text-slate-500">CI ${r.ci[0]>0?"+":""}${r.ci[0].toFixed(1)}…${r.ci[1]>0?"+":""}${r.ci[1].toFixed(1)}%</div>`:""}</td>`:`<td class="text-right">${dash}</td>`;
     $("#sentVal").innerHTML=`<tr class="text-slate-400 text-[11px]"><th class="text-left py-1">${t("sent_c_phase")}</th><th class="text-right">n</th><th class="text-right">1M</th><th class="text-right">3M</th><th class="text-right">6M</th></tr>`+
       rows.map(r=>`<tr class="border-t border-slate-700/40 ${r.group===S.phase?"bg-sky-500/10":""}"><td class="py-0.5">${t((PH[r.group]||["sent_p_"+r.group])[0])}${r.group===S.phase?" ◀":""}</td><td class="text-right text-slate-400">${r.n}${isNum(r.n_ep)?` <span class="text-slate-500">(${r.n_ep})</span>`:""}</td>${cell(r.r21)}${cell(r.r63)}${cell(r.r126)}</tr>`).join("");
     $("#sentNote").textContent=t("sent_note");
@@ -1408,8 +1593,10 @@
       $("#sentVerdict").innerHTML = en
         ? `<b>Two-week read:</b> index ${isNum(first.score)?first.score.toFixed(0):dash} → <b>${sc.toFixed(0)}</b> (${lvl(sc)}${trend?", "+trend:""}); phase ${phs}; VIX ${V.now} at the ${isNum(V.pct3y)?V.pct3y.toFixed(0):dash}th 3-year percentile${b0?`; breadth (stocks above 50d) ${b0}`:""}. ${quiet?"Volumes are quiet across sectors — rotation, not liquidation.":"Volume is elevated in some sectors."}`
         : `<b>近两周：</b>情绪指数 ${isNum(first.score)?first.score.toFixed(0):dash} → <b>${sc.toFixed(0)}</b>（${lvl(sc)}${trend?"、"+trend:""}）；阶段 ${phs}；VIX ${V.now}（3年${isNum(V.pct3y)?V.pct3y.toFixed(0):dash}%分位）${b0?`；市场广度（站上50日线）${b0}`:""}。${quiet?"各板块成交清淡——是轮动，不是出逃。":"部分板块放量。"}`;
-      const chip=(x,cls)=>`<span class="badge ${cls}" title="10d ${isNum(x.r10)?x.r10.toFixed(1):dash}% · ${t("sent_c_rel")} ${isNum(x.rel10)?x.rel10.toFixed(1):dash}% · ${t("sent_c_rvol")} ${isNum(x.rvol)?x.rvol.toFixed(2):dash}×">${escH(x.name)} ${isNum(x.rel10)?(x.rel10>0?"+":"")+x.rel10.toFixed(1)+"%":dash}</span>`;
-      $("#sentStrip").innerHTML = `<span class="text-slate-400">${en?"Money favours":"资金偏好"}</span> `+sec.slice(0,3).map(x=>chip(x,"tag-strong")).join(" ")+` <span class="text-slate-400 ml-2">${en?"avoids":"回避"}</span> `+sec.slice(-3).reverse().map(x=>chip(x,"tag-warn")).join(" ");
+      // 铁律: "科技 +1.6%" 是涨跌幅, 必须是裸色数字 —— 旧写法塞进 tag-strong 绿药丸里,
+      // 既把涨跌当成了状态, 绿色又和"跌"撞车。分组语义交给前面的"资金偏好/回避"标题。
+      const chip=(x)=>`<span class="secchip" title="10d ${isNum(x.r10)?x.r10.toFixed(1):dash}% · ${t("sent_c_rel")} ${isNum(x.rel10)?x.rel10.toFixed(1):dash}% · ${t("sent_c_rvol")} ${isNum(x.rvol)?x.rvol.toFixed(2):dash}×">${escH(x.name)} <b class="${!isNum(x.rel10)?"":(x.rel10>0?"pos":(x.rel10<0?"neg":""))}">${isNum(x.rel10)?(x.rel10>0?"+":"")+x.rel10.toFixed(1)+"%":dash}</b></span>`;
+      $("#sentStrip").innerHTML = `<span class="text-slate-400">${en?"Money favours":"资金偏好"}</span> `+sec.slice(0,3).map(chip).join("")+` <span class="text-slate-400 ml-2">${en?"avoids":"回避"}</span> `+sec.slice(-3).reverse().map(chip).join("");
     }catch(e){}
   }
   window.renderSentiment=renderSentiment;
@@ -1435,6 +1622,7 @@
     persist(); render();
     $("#mainTable").scrollIntoView({behavior:"smooth", block:"start"});
   }
+  const cssTok = (n)=>getComputedStyle(document.body).getPropertyValue(n).trim() || "#3ddc97";
   function renderIndustryChart(){
     const el=$("#industryChart");
     if(!hasECharts){ el.innerHTML=`<div class="text-amber-400 text-sm p-4">${LANG==="en"?"Could not load ECharts (needs internet); table still works.":"未能加载 ECharts（需联网加载图表库），表格功能不受影响。"}</div>`; return; }
@@ -1444,7 +1632,7 @@
     const inds = (DATA.industries||[]).slice();
     if(indKind==="treemap"){
       const data = inds.map(d=>({ name:d.industry, value: isNum(d.prosperity_score)? +d.prosperity_score.toFixed(1):0,
-        itemStyle:{color: d.selected? "#16a34a" : C.base} }));
+        itemStyle:{color: d.selected? cssTok("--ok") : C.base} }));
       indChart.setOption({
         backgroundColor:"transparent",
         tooltip:{ formatter:p=>`<b>${p.name}</b><br/>${t("prosperity_total")}：<b>${p.value}</b>` },
@@ -1456,14 +1644,14 @@
       const arr = inds.slice(0,8).slice().reverse();
       const names = arr.map(d=>d.industry);
       const scores = arr.map(d=> isNum(d.prosperity_score)? +d.prosperity_score.toFixed(1) : 0);
-      const colors = arr.map(d=> d.selected? "#16a34a" : C.base);
+      const colors = arr.map(d=> d.selected? cssTok("--ok") : C.base);
       indChart.setOption({
         backgroundColor:"transparent",
         grid:{left:96,right:40,top:6,bottom:16},
         tooltip:{trigger:"axis", axisPointer:{type:"shadow"},
           formatter:(p)=>{ const i=arr[p[0].dataIndex];
             const row=(lab,v)=>`${lab}：<b>${isNum(v)?v.toFixed(0):"—"}</b>`;
-            return `<b>${i.industry}</b> ${i.selected?'<span style="color:#22c55e">'+t("selected_paren")+'</span>':''}<br/>`+
+            return `<b>${i.industry}</b> ${i.selected?'<span style="color:'+cssTok("--ok")+'">'+t("selected_paren")+'</span>':''}<br/>`+
               `${t("prosperity_total")}：<b>${isNum(i.prosperity_score)?i.prosperity_score.toFixed(1):"—"}</b><br/>`+
               [row(t("p_trend"),i.trend),row(t("p_momentum"),i.momentum),row(t("p_breadth"),i.breadth),row(t("p_capital"),i.capital),row(t("p_fund"),i.fundamental)].join("　");
           }},
@@ -1612,7 +1800,7 @@
         const earn = (isNum(c.earn_days)&&c.earn_days<=7)? ` <span class="badge tag-warn !text-[10px] !px-1" title="${t("earn_tip")} · ${escH(c.earn_date||"")}">${t("earn_in")}${c.earn_days}${t("earn_days_u")}</span>` : "";
         const pool=(window.__BT__&&__BT__.agg&&__BT__.agg.pool&&isNum(__BT__.agg.pool.win10))?__BT__.agg.pool.win10:null;
         const seg=(bt&&isNum(bt.seg_win_post))?bt.seg_win_post:null;
-        const segChip=(seg!=null)?` <span class="text-[10px] font-mono cursor-help ${pool!=null&&seg>=pool+0.03?"text-emerald-300":"text-slate-500"}" title="${t("seg_chip_tip")}">${(seg*100).toFixed(0)}%</span>`:"";
+        const segChip=(seg!=null)?` <span class="dpill inl ${pool!=null&&seg>=pool+0.03?"ok":"mute"} cursor-help" style="font-size:10px;padding:0 6px" title="${t("seg_chip_tip")}">${(seg*100).toFixed(0)}%</span>`:"";
         const tagTip=v&&v.indexOf("蓄势待发")>=0?t("coil_demote_tip"):(v&&v.indexOf("基本面弱")>=0?t("warn_neg_tip"):"");
         return `<span class="badge ${tagClass(v)}"${tagTip?` title="${escH(tagTip)}"`:""}>${v?escH(tagText(v)):dash}</span>${segChip}${gem}${star}${earn}`;
       }
@@ -1646,8 +1834,8 @@
       }
       case "growth_quality": return growthQualityCell(v);
       case "cuosha_score": return isNum(v)? `<span class="font-bold text-amber-300 cursor-help" title="${escH(c.cuosha_note||"")}">💎 ${v}</span>` : dash;
-      case "cuosha_upside": return isNum(v)? (v>0? `<span class="text-emerald-300 font-semibold">+${v}%</span>` : `<span class="text-slate-500">0%</span>`) : dash;
-      case "cuosha_p20": return isNum(v)? `<span class="${v>=50?"text-emerald-300":(v>=30?"text-amber-300":"text-slate-300")}" title="n=${c.cuosha_p20_n||dash}">${v.toFixed(0)}%</span>` : dash;
+      case "cuosha_upside": return isNum(v)? (v>0? `<span class="pos font-semibold">+${v}%</span>` : `<span class="text-slate-500">0%</span>`) : dash;
+      case "cuosha_p20": return isNum(v)? `<span class="dpill inl ${v>=50?"ok":(v>=30?"mid":"mute")}" title="n=${c.cuosha_p20_n||dash}">${v.toFixed(0)}%</span>` : dash;
       case "dominance_disp": {
         if(v==null||v==="") return `<span>${dash}</span>`;
         const gold = String(v).indexOf("👑")>=0;
@@ -1728,14 +1916,16 @@
     const avg=a=>a.length? (a.reduce((s,x)=>s+x,0)/a.length):null;
     const inds=new Set(cs.map(c=>c.industry).filter(Boolean)).size;
     const U=(n)=>LANG==="en"?"":" 只", G=(n)=>LANG==="en"?"":" 个";
+    const sg=(v)=>!isNum(v)?"n":(v>0?"pos":(v<0?"neg":"n"));   // 带符号才上涨跌色, 其余中性
     const items=[
-      [t("strip_strong"), strong+U(), "#4ade80"],
-      [t("strip_avgdist"), isNum(avg(dists))?avg(dists).toFixed(2)+"%":dash, "#38bdf8"],
-      [t("strip_avgup"), isNum(avg(ups))?(avg(ups)>0?"+":"")+avg(ups).toFixed(1)+"%":dash, "#14b8a6"],
-      [t("col_industry"), inds+G(), "#c084fc"],
-      [t("strip_fav"), favs.size+U(), "#facc15"],
+      [t("strip_strong"), strong+U(), "n"],
+      [t("strip_avgdist"), isNum(avg(dists))?avg(dists).toFixed(2)+"%":dash, "n"],
+      [t("strip_avgup"), isNum(avg(ups))?(avg(ups)>0?"+":"")+avg(ups).toFixed(1)+"%":dash, sg(avg(ups))],
+      [t("col_industry"), inds+G(), "n"],
+      [t("strip_fav"), favs.size+U(), "n"],
     ];
-    $("#ovStrip").innerHTML = items.map(([k,v,col])=>`<span class="miniStat"><span class="text-slate-400">${k}</span> <b style="color:${col}">${v}</b></span>`).join("");
+    // 颜色铁律: 计数是中性数字 (--text), 只有带符号的涨跌/收益才上 .pos/.neg; 标签走 --dim。
+    $("#ovStrip").innerHTML = items.map(([k,v,cls])=>`<span class="miniStat"><span class="ovk">${k}</span> <b class="ovv ${cls}">${v}</b></span>`).join("");
   }
 
   function persist(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){} }
@@ -2510,7 +2700,7 @@
       return `<tr class="border-t border-slate-700/40">
         <td class="py-1 cursor-pointer hover:text-sky-300 wlOpen" data-c="${escH(code)}"><b>${escH(inf.name||code)}</b> <span class="font-mono text-xs text-slate-400">${escH(code)}</span>${inf.live?' <span class="text-[10px] text-emerald-400">LIVE</span>':''}</td>
         <td class="text-right">${isNum(inf.price)?inf.price:dash}</td>
-        <td class="text-right font-semibold ${chg>0?"text-rose-300":(chg<0?"text-emerald-300":"")}">${chg==null?dash:(chg>0?"+":"")+chg.toFixed(2)+"%"}</td>
+        <td class="text-right font-semibold ${chg>0?"pos":(chg<0?"neg":"")}">${chg==null?dash:(chg>0?"+":"")+chg.toFixed(2)+"%"}</td>
         <td>${wlStatus(code)}</td>
         <td class="text-right"><button class="segbtn wlDel" data-c="${escH(code)}">✕</button></td></tr>`;
     }).join("");
@@ -2559,7 +2749,7 @@
       const faved=favs.has(code);
       return `<div class="gsrow" data-c="${escH(code)}">
         <span class="gsmain gsAct" data-act="open" data-c="${escH(code)}"><b>${escH(nm||code)}</b> <span class="font-mono text-[11px]" style="color:var(--muted)">${escH(code)}</span> ${wlStatus(code)}</span>
-        <span class="gspx">${isNum(px)?px:""}${isNum(chg)?` <span class="${chg>0?"text-rose-300":(chg<0?"text-emerald-300":"")}">${(chg>0?"+":"")+chg.toFixed(2)}%</span>`:""}</span>
+        <span class="gspx">${isNum(px)?px:""}${isNum(chg)?` <span class="${chg>0?"pos":(chg<0?"neg":"")}">${(chg>0?"+":"")+chg.toFixed(2)}%</span>`:""}</span>
         <button class="segbtn gsAct" data-act="open" data-c="${escH(code)}">${t("gs_view")}</button>
         <button class="segbtn gsAct ${faved?"on":""}" data-act="fav" data-c="${escH(code)}">${faved?"★ "+t("gs_faved"):"☆ "+t("gs_fav")}</button>
         <button class="segbtn gsAct" data-act="pf" data-c="${escH(code)}">${t("gs_pf")} ▾</button>
@@ -2638,6 +2828,7 @@
     if(!sel.dataset.dsBound){ sel.dataset.dsBound="1";
       sel.addEventListener("change", ()=>setTimeout(()=>{ dsSync&&dsSync(); },0)); }
     wrap.classList.remove("hidden");
+    document.body.classList.add("hasDates");   // <960px 时页头第二行改显原生 #dateSel
     setTimeout(()=>{ sx=Math.min(0, track.clientWidth-bars.scrollWidth); clamp(); dsSync(); },0);
   }
 
@@ -2747,6 +2938,7 @@
       }
     }catch(e){}
   }
+  window.fvSyncState = ()=>({pending: fvPend.size, user: FV_USER});
   function fvGate(){
     if(!FV_HOST) return true;              // 镜像/本地开发不拦
     if(FV_USER) return true;
@@ -2826,23 +3018,28 @@
 
   // ---------- 板块自由拖动排序 (顺序存 us_seclayout_v1, 随账号云同步) ----------
   (function(){
-    const SEC_IDS = ["searchCard","deckCard","wlCard","qlCard","btCard","indCard","tgtCard","tblCard","jnCard"];
+    const SEC_IDS = ["searchCard","deckCard","tblCard","wlCard","qlCard","btCard","indCard","tgtCard","jnCard"];
     const SEC_KEY = "us_seclayout_v1";
     const first = document.getElementById(SEC_IDS[0]);
     if(!first) return;
     const cont = first.parentElement;
-    try{                                            // 应用保存的顺序
+    const applyOrder = (ids)=>{
+      let prev = null;
+      ids.forEach(id=>{
+        const el = document.getElementById(id); if(!el) return;
+        if(prev) prev.after(el);
+        else{ const anchor = SEC_IDS.map(i=>document.getElementById(i)).find(x=>x && x!==el);
+              if(anchor) cont.insertBefore(el, anchor); }
+        prev = el;
+      });
+    };
+    try{
       const saved = JSON.parse(localStorage.getItem(SEC_KEY) || "[]");
-      if(Array.isArray(saved) && saved.length){
-        let prev = null;
-        saved.forEach(id=>{
-          const el = document.getElementById(id); if(!el) return;
-          if(prev) prev.after(el);
-          else{ const anchor = SEC_IDS.map(i=>document.getElementById(i)).find(x=>x && x!==el);
-                if(anchor) cont.insertBefore(el, anchor); }
-          prev = el;
-        });
-      }
+      // 已保存(含云同步)的顺序永远优先, 不迁移不覆盖 —— 老用户的手排版面保持原样;
+      // 没保存过才铺开 SEC_IDS 默认顺序 (2026-09-07: 候选主表 tblCard 提到第3位,
+      // 在搜索条+作战台之后。此前默认顺序是 HTML 书写顺序, SEC_IDS 只当 id 清单用)。
+      if(Array.isArray(saved) && saved.length) applyOrder(saved);
+      else applyOrder(SEC_IDS);
     }catch(e){}
     const glueOv = ()=>{ const ov=document.getElementById("ovStrip"), dk=document.getElementById("deckCard");
       if(ov && dk) dk.after(ov); };
@@ -2851,7 +3048,8 @@
       const sec = document.getElementById(id); if(!sec) return;
       if(!sec.style.position) sec.style.position = "relative";
       const h = document.createElement("div");
-      h.className = "secHandle"; h.title = "按住拖动排序"; h.textContent = "⠿";
+      h.className = "secHandle"; h.textContent = "⠿";
+      h.setAttribute("data-i18n-title", "drag_handle"); h.title = t("drag_handle");
       sec.appendChild(h);
       h.addEventListener("mousedown", ()=>sec.setAttribute("draggable", "true"));
       sec.addEventListener("dragstart", (e)=>{ sec.classList.add("secDragging");
@@ -2885,8 +3083,29 @@
       return (ea.compareDocumentPosition(eb) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1; });
     const syncNav = ()=>{
       const nav = document.getElementById("sideNav"); if(!nav) return;
+      // 非板块的子元素 (A 仓的 /targets/ 外链、控件区 #navCtrls) 永远排在板块链接之后
+      const tail = Array.from(nav.children).filter(el=>!(el.tagName==="A" &&
+        SEC_IDS.indexOf((el.getAttribute("href")||"").slice(1))>=0));
       domOrder().forEach(id=>{ const a = navOf(id); if(a) nav.appendChild(a); });
+      tail.forEach(el=>nav.appendChild(el));
     };
+    // 按导航顺序重排真实板块 (桌面侧栏拖动 与 手机"更多"抽屉排序 共用这一条路径)
+    const applyNavOrder = (navIds)=>{
+      const ids = navIds.filter(i=>SEC_IDS.indexOf(i)>=0 && document.getElementById(i));
+      const cur = domOrder();
+      let k = 0;
+      const finalIds = cur.map(i=>ids.indexOf(i)>=0 ? ids[k++] : i);
+      const firstEl = document.getElementById(cur[0]);
+      let prev = null;
+      finalIds.forEach(i=>{ const el = document.getElementById(i);
+        if(prev) prev.after(el);
+        else if(el !== firstEl) cont.insertBefore(el, firstEl);
+        prev = el; });
+      glueOv();
+      try{ localStorage.setItem(SEC_KEY, JSON.stringify(domOrder())); }catch(e){}
+      syncNav();
+    };
+    window.fvSec = {ids:SEC_IDS, order:domOrder, apply:applyNavOrder};
     document.querySelectorAll("#sideNav a").forEach(a=>{
       const id = (a.getAttribute("href")||"").slice(1);
       if(SEC_IDS.indexOf(id) < 0 || !document.getElementById(id)) return;
@@ -2903,21 +3122,9 @@
       a.addEventListener("drop", (e)=>e.preventDefault());
       a.addEventListener("dragend", ()=>{
         a.classList.remove("secDragging");
-        // 按导航新顺序重排真实板块; 不在导航里的板块 (如搜索条) 位置保持不变
-        const navIds = Array.from(document.querySelectorAll("#sideNav a"))
-          .map(x=>(x.getAttribute("href")||"").slice(1))
-          .filter(i=>SEC_IDS.indexOf(i)>=0 && document.getElementById(i));
-        const cur = domOrder();
-        let k = 0;
-        const finalIds = cur.map(i=>navIds.indexOf(i)>=0 ? navIds[k++] : i);
-        const firstEl = document.getElementById(cur[0]);
-        let prev = null;
-        finalIds.forEach(i=>{ const el = document.getElementById(i);
-          if(prev) prev.after(el);
-          else if(el !== firstEl) cont.insertBefore(el, firstEl);
-          prev = el; });
-        glueOv();
-        try{ localStorage.setItem(SEC_KEY, JSON.stringify(domOrder())); }catch(e){}
+        // 不在导航里的板块 (如搜索条) 位置保持不变
+        applyNavOrder(Array.from(document.querySelectorAll("#sideNav a"))
+          .map(x=>(x.getAttribute("href")||"").slice(1)));
       });
     });
     syncNav();
@@ -2970,6 +3177,7 @@
       c.href = a.href;
       c.textContent = a.textContent.trim();
       c.title = a.textContent.trim();
+      if(a.dataset.i18n) c.dataset.i18n = a.dataset.i18n;   // 语言切换时侧栏副本一起翻译
       if(a.classList.contains("on")) c.classList.add("on");
       mk.appendChild(c);
     });
@@ -2983,10 +3191,13 @@
         b.style.display = s.style.display === "none" ? "none" : "";
       };
       syncTxt();
-      new MutationObserver(syncTxt).observe(s, {childList:true, characterData:true,
+      const mo = new MutationObserver(syncTxt);
+      mo.observe(s, {childList:true, characterData:true,
         subtree:true, attributes:true, attributeFilter:["style", "title"]});
       b.onclick = ()=>s.click();
+      return mo;                         // 调用方可在销毁副本时 disconnect
     };
+    window.fvProxy = proxy;              // 手机"更多"抽屉复用同一套代理, 不复制状态
     proxy("nvTheme", "themeBtn");
     proxy("nvLang", "langBtn");
     proxy("nvAuth", "authBtn");
@@ -3050,8 +3261,8 @@
       window.addEventListener("resize", applyNav); applyNav(); }
     // 迷你统计 (原横条隐藏)
     function ovMini(){ const el=document.getElementById("ovMini"); if(!el||!DATA||!DATA.meta) return;
-      const m=DATA.meta; el.innerHTML = `${t("ov_scanned")} <b>${m.n_scanned??"—"}</b> · ${t("ov_hit")} <b>${m.n_hit??"—"}</b> · ${t("ov_date")} <b>${m.run_date||m.data_date||"—"}</b>`; }
-    setTimeout(ovMini, 0);
+      const m=DATA.meta; el.innerHTML = `${t("ov_date")} <b>${m.data_date||m.run_date||"—"}</b>`; }   // 2026-09-07 老板: 扫描数/命中数下线
+    setTimeout(ovMini, 0); window.__ovMini = ovMini;   // 语言/日期切换后由 renderOverview 重刷
     // 搬运: 温度计/风险偏好 -> 作战台折叠区; 权重实验室 -> 主表折叠区
     setTimeout(()=>{
       const more = document.getElementById("deckMoreBody");
@@ -3092,9 +3303,9 @@
   // ---- 详情弹窗标签页 + 挨个翻页 ----
   const DTABS = { list: [], cur: null, MAX: 8 };
   function dtabsRender(){
-    const el = document.getElementById("dTabs"); if(!el) return;
+    const el = document.getElementById("dStockTabs"); if(!el) return;
     el.innerHTML = DTABS.list.map(x=>`<span class="dtabchip ${x.code===DTABS.cur?"on":""}" data-c="${x.code}">${x.name||x.code}<span class="x" data-x="${x.code}">✕</span></span>`).join("")
-      + (DTABS.list.length>1? `<button class="dnavbtn" id="dPrev" title="上一个 (←)">◀</button><button class="dnavbtn" id="dNext" title="下一个 (→)">▶</button>`:"");
+      + (DTABS.list.length>1? `<button class="dnavbtn" id="dPrev" title="${escH(t("dtab_prev"))}">◀</button><button class="dnavbtn" id="dNext" title="${escH(t("dtab_next"))}">▶</button>`:"");
     el.querySelectorAll(".dtabchip").forEach(ch=>{ ch.onclick=(e)=>{ if(e.target.dataset.x) return;
       const it = DTABS.list.find(x=>x.code===ch.dataset.c); if(it) openDetail(it.c); }; });
     el.querySelectorAll(".x").forEach(x=>{ x.onclick=(e)=>{ e.stopPropagation();
@@ -3121,6 +3332,263 @@
     if(e.key==="ArrowLeft"){ e.preventDefault(); dtabsStep(-1); }
     if(e.key==="ArrowRight"){ e.preventDefault(); dtabsStep(1); }
   });
+
+  // ---------- 📱 手机导航 (<960px): 底部标签栏 + 更多/账号抽屉 (design/mobile_nav_spec.md) ----------
+  // 不复制状态: 板块顺序走 window.fvSec (与桌面侧栏同一份 DOM 真相 + 同一个 SEC_KEY, 因此自动云同步),
+  // 主题/语言/账号走 window.fvProxy 代理页头按钮, 日期镜像 #dateSel。
+  (function(){
+    if(!window.matchMedia) return;
+    const $$ = (id)=>document.getElementById(id);
+    const MKT = (typeof LS_MARKET==="object" && LS_MARKET && LS_MARKET.key) ? LS_MARKET.key : "a";
+    // 线框图标 (1.6px 描边, 同重同宽; 不用 emoji)
+    document.body.insertAdjacentHTML("afterbegin", '<svg style="display:none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'+
+      '<symbol id="i-deck" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>'+
+      '<symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></symbol>'+
+      '<symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 20h18"/><path d="M4 16l5-6 4 3 7-8"/></symbol>'+
+      '<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="5" r="1.6"/><circle cx="12" cy="5" r="1.6"/><circle cx="19" cy="5" r="1.6"/><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/><circle cx="5" cy="19" r="1.6"/><circle cx="12" cy="19" r="1.6"/><circle cx="19" cy="19" r="1.6"/></symbol>'+
+      '<symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/></symbol>'+
+      '<symbol id="i-handle" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></symbol>'+
+      '<symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>'+
+      '<symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/></symbol>'+
+      '<symbol id="i-crown" viewBox="0 0 24 24"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z"/></symbol>'+
+      '<symbol id="i-bars" viewBox="0 0 24 24"><path d="M5 20v-8M11 20V5M17 20v-5M3 20h18"/></symbol>'+
+      '<symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></symbol>'+
+      '<symbol id="i-book" viewBox="0 0 24 24"><path d="M5 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2z"/><path d="M5 18a2 2 0 0 1 2-2h11"/></symbol>'+
+      '<symbol id="i-flask" viewBox="0 0 24 24"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3"/></symbol>'+
+      '<symbol id="i-trend" viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></symbol>'+
+      '<symbol id="i-lib" viewBox="0 0 24 24"><path d="M4 4h4v16H4zM10 4h4v16h-4zM16 6l4-1 3 15-4 1z"/></symbol>'+
+      '</svg>');
+    const ico = (id, cls)=>'<svg class="ico'+(cls?" "+cls:"")+'"><use href="#'+id+'"/></svg>';
+    const SEC_ICO = {deckCard:"i-deck", wlCard:"i-star", qlCard:"i-crown", btCard:"i-chart",
+                     indCard:"i-bars", tblCard:"i-list", jnCard:"i-book", tgtCard:"i-target"};
+    const TABS = [{id:"tabDeck", k:"tab_deck", ic:"i-deck", sec:"deckCard"},
+                  {id:"tabCands", k:"tab_cands", ic:"i-list", sec:"tblCard"},
+                  {id:"tabBt", k:"tab_bt", ic:"i-chart", sec:"btCard"},
+                  {id:"tabMore", k:"tab_more", ic:"i-more"},
+                  {id:"tabAcct", k:"tab_acct", ic:"i-user"}];
+    const bar = document.createElement("nav");
+    bar.id = "tabBar";
+    bar.innerHTML = TABS.map(x=>'<button type="button" class="tab" id="'+x.id+'">'+ico(x.ic)+
+      '<span data-i18n="'+x.k+'">'+t(x.k)+"</span></button>").join("");
+    document.body.appendChild(bar);
+    const rb = $$("refreshBtn"); if(rb) rb.setAttribute("aria-label", t("refresh_btn"));
+
+    // ---- 抽屉外壳 ----
+    let sheet = null, kind = null, act = null, obs = [];
+    function lamps(){
+      TABS.forEach(x=>{ const b=$$(x.id); if(b) b.classList.toggle("on", kind? (kind==="more"?x.id==="tabMore":x.id==="tabAcct") : x.id===act); });
+    }
+    function closeSheet(fromPop){
+      if(!sheet) return;
+      obs.forEach(o=>{ try{ o.disconnect(); }catch(e){} }); obs = [];
+      sheet.remove(); sheet = null; kind = null;
+      document.body.style.overflow = "";
+      lamps();
+      if(!fromPop && history.state && history.state.fvSheet) history.back();
+    }
+    function openSheet(k, html, bind){
+      const same = (kind===k);
+      if(sheet) closeSheet();
+      if(same) return;
+      kind = k;
+      sheet = document.createElement("div");
+      sheet.id = "fvSheet";
+      sheet.innerHTML = '<div class="fvScrim"></div><div class="fvBody">'+html+"</div>";
+      document.body.appendChild(sheet);
+      document.body.style.overflow = "hidden";
+      try{ history.pushState({fvSheet:1}, ""); }catch(e){}
+      sheet.querySelector(".fvScrim").onclick = ()=>closeSheet();
+      if(bind) bind(sheet);
+      lamps();
+    }
+    function rebuildSheet(){                    // 语言切换后抽屉内文案原地重绘 (不动 history)
+      if(!sheet) return;
+      const body = sheet.querySelector(".fvBody");
+      if(kind==="more"){ obs.forEach(o=>{ try{ o.disconnect(); }catch(e){} }); obs = [];
+        body.innerHTML = moreHTML(); bindMore(sheet); }
+      else if(kind==="acct" && FV_USER){ body.innerHTML = acctHTML();
+        const b = body.querySelector("#mbLogout"), ab = $$("authBtn");
+        if(b) b.onclick = ()=>{ closeSheet(); if(ab) ab.click(); }; }
+    }
+    const lb = $$("langBtn");
+    if(lb) lb.addEventListener("click", ()=>setTimeout(rebuildSheet, 60));
+    window.addEventListener("popstate", ()=>{ if(sheet) closeSheet(true); });
+    document.addEventListener("keydown", (e)=>{ if(e.key==="Escape" && sheet) closeSheet(); });
+
+    // ---- 滚动跟随 (抽屉打开时直接 return, 否则视口里的板块会把亮灯抢回去) ----
+    const vis = new Set();
+    const withSec = TABS.filter(x=>x.sec && $$(x.sec));
+    if(window.IntersectionObserver && withSec.length){
+      const io = new IntersectionObserver((es)=>{
+        es.forEach(e=>{ if(e.isIntersecting) vis.add(e.target.id); else vis.delete(e.target.id); });
+        if(kind) return;
+        const hit = withSec.find(x=>vis.has(x.sec));
+        act = hit ? hit.id : null;
+        lamps();
+      }, {rootMargin:"-80px 0px -60% 0px"});
+      withSec.forEach(x=>io.observe($$(x.sec)));
+    }
+    const goSec = (id)=>{ const el=$$(id); if(!el) return;
+      const y0 = window.scrollY;
+      el.scrollIntoView({behavior:"smooth", block:"start"});
+      setTimeout(()=>{                          // 兜底: 个别环境/降低动态效果时平滑滚动不生效, 直接跳位
+        if(Math.abs(window.scrollY - y0) < 4){
+          const top = el.getBoundingClientRect().top + window.scrollY - 80;   // 与 scroll-padding-top 同值 (页头 75px)
+          window.scrollTo(0, Math.max(0, top)); }
+      }, 350); };
+
+    // ---- 分组一: 板块顺序 (从 #sideNav a[href^="#"] 生成; A 仓第 8 条是 /targets/ 外链, 天然排除) ----
+    const navLinks = ()=>Array.from(document.querySelectorAll('#sideNav > a[href^="#"]'))
+      .filter(a=>{ const id=(a.getAttribute("href")||"").slice(1);
+        return id && id!=="searchCard" && document.getElementById(id); });
+    // ---- 分组三: 其他工作台 ----
+    // 真相来源是侧栏的**外链** (#sideNav a:not([href^="#"])): 侧栏新加一条 (如 /data/ 数据总览)
+    // 手机抽屉里自动就有, 标签也直接用侧栏那条的文案 (有 data-i18n 就跟着切中英)。
+    // SITE_FIX 是侧栏里没有、但必须露出的固定子站 —— 按规格 §3 的顺序补在前面, 已在侧栏出现的不重复。
+    // 未上线子站: 页面还没发布 (/strategies/ 现在是 404), 抽屉里不能给死链 ——
+    // 两个来源 (SITE_FIX 固定表 + 侧栏外链) 都滤掉; 侧栏若已挂链接,
+    // 给那条 <a> 加 data-soon (CSS 顺带隐掉桌面端)。策略库上线时删掉这行即可。
+    const SITE_SOON = {"/strategies/":1};
+    const SITE_FIX = [["site_targets","/targets/"], ["site_lab","/lab/"],
+                      ["site_rightside","/rightside/"], ["site_strategies","/strategies/"]];
+    const SITE_ICO = {"/targets/":"i-target", "/lab/":"i-flask", "/rightside/":"i-trend",
+                      "/strategies/":"i-lib", "/data/":"i-bars"};
+    const SITE_BASE = FV_HOST ? "" : "https://fairvalpha.com";
+    // 注意用直接子选择器: #navCtrls (侧栏控制区) 是后来 JS 插进 #sideNav 里的,
+    // 里面 #nvMkts 的 A股/美股 镜像链接也是 <a href="/a/">, 不加 '>' 会被当成其他工作台混进来。
+    const navSites = ()=>Array.from(document.querySelectorAll('#sideNav > a:not([href^="#"])'))
+      .filter(a=>!a.hasAttribute("data-soon") && !a.hasAttribute("data-hidden"))
+      .map(a=>{ const href=a.getAttribute("href")||"";
+        const path=href.replace(/^https?:\/\/[^/]+/, "");
+        const raw=a.dataset.i18n ? t(a.dataset.i18n) : (a.textContent||"").trim();
+        // 侧栏文案带 emoji (如 "🎯 分析师目标"), 抽屉行左边已有线框图标, 去掉前导符号免得双图标
+        return {path, label:raw.replace(/^[^\u4e00-\u9fa5A-Za-z0-9]+/, "")}; })
+      .filter(x=>x.path && x.path !== "/");
+    function sitesList(){
+      const nav = navSites(), out = [], seen = {};
+      SITE_FIX.forEach(([k,p])=>{ if(SITE_SOON[p]) return;
+        const hit = nav.find(x=>x.path===p);
+        out.push({path:p, label: hit ? hit.label : t(k)}); seen[p] = 1; });
+      nav.forEach(x=>{ if(!seen[x.path] && !SITE_SOON[x.path]){ out.push(x); seen[x.path] = 1; } });
+      return out;
+    }
+    function moreHTML(){
+      const rows = navLinks().map(a=>{ const id=(a.getAttribute("href")||"").slice(1);
+        return '<div class="fvRow" data-id="'+id+'"><span class="handle">'+ico("i-handle")+"</span>"+
+          ico(SEC_ICO[id]||"i-deck","ric")+'<span class="lbl">'+escH(t(a.dataset.i18n))+"</span>"+
+          ico("i-chev","chev")+"</div>"; }).join("");
+      const sites = sitesList().map(s=>'<div class="fvRow" data-href="'+SITE_BASE+s.path+'">'+
+        ico(SITE_ICO[s.path]||"i-chev","ric pad")+
+        '<span class="lbl">'+escH(s.label)+'<span class="sub">'+escH(s.path)+"</span></span>"+
+        ico("i-chev","chev")+"</div>").join("");
+      return '<div class="fvGrab"></div>'+
+        '<div class="fvGh"><span>'+escH(t("more_sections"))+'</span><span class="hint">'+escH(t("more_reorder_hint"))+
+          '</span><span class="saved">'+escH(t("reorder_done"))+"</span></div>"+
+        '<div class="fvList" id="mbSecs">'+rows+"</div>"+
+        '<div class="fvGh"><span>'+escH(t("more_settings"))+"</span></div>"+
+        '<div id="mbSettings">'+
+          '<div class="fvSet"><span class="k">'+escH(t("more_theme"))+'</span><button id="mbTheme" class="segbtn"></button></div>'+
+          '<div class="fvSet"><span class="k">'+escH(t("more_lang"))+'</span><button id="mbLang" class="segbtn"></button></div>'+
+          '<div class="fvSet" id="mbDateRow"><span class="k">'+escH(t("more_date"))+'</span><select id="mbDateSel"></select></div>'+
+          '<div class="fvSet"><span class="k">'+escH(t("more_market"))+'</span><span id="mbMkts"></span></div>'+
+          '<div class="fvSet"><span class="k">'+escH(t("updated"))+'</span><span class="v" id="mbUpd">—</span></div>'+
+        "</div>"+
+        '<div class="fvGh"><span>'+escH(t("more_sites"))+"</span></div>"+
+        '<div class="fvList">'+sites+"</div><div style=\"height:10px\"></div>";
+    }
+    function bindMore(root){
+      // 设置组: 主题/语言复用 window.fvProxy (代理页头按钮, 不复制状态)
+      if(window.fvProxy){ obs.push(window.fvProxy("mbTheme","themeBtn"), window.fvProxy("mbLang","langBtn")); }
+      const ds=$$("dateSel"), md=$$("mbDateSel"), row=$$("mbDateRow");
+      if(ds && md && ds.options.length){ md.innerHTML = ds.innerHTML; md.value = ds.value;
+        md.onchange = ()=>{ ds.value = md.value; ds.dispatchEvent(new Event("change")); }; }
+      else if(row) row.style.display = "none";
+      const mk = $$("mbMkts");
+      if(mk) document.querySelectorAll("#mktTabs a").forEach(a=>{
+        const c = document.createElement("a");
+        c.href = a.href; c.textContent = a.textContent.trim();
+        if(a.dataset.i18n) c.dataset.i18n = a.dataset.i18n;
+        if(a.classList.contains("on")) c.classList.add("on");
+        mk.appendChild(c); });
+      const up=$$("updatedAt"), mu=$$("mbUpd");
+      if(up && mu) mu.textContent = up.textContent;
+      // 子站: 先写来源市场 (仅本机, 不匹配 SYNC_RE) 供子站返回键使用
+      root.querySelectorAll(".fvRow[data-href]").forEach(r=>{ r.onclick = ()=>{
+        try{ localStorage.setItem("fv_shell_from", MKT); }catch(e){}
+        location.href = r.dataset.href; }; });
+      // 排序: Pointer Events (HTML5 DnD 触屏无效); 手柄立即, 行上长按 350ms
+      const list = $$("mbSecs"); if(!list) return;
+      list.querySelectorAll(".fvRow[data-id]").forEach(row2=>{
+        let timer=null, dragging=false, moved=false, sx=0, sy=0;
+        const start = (e)=>{ dragging=true; moved=true; row2.classList.add("lift");
+          list.classList.add("reordering");
+          try{ row2.setPointerCapture(e.pointerId); }catch(_){}
+          if(navigator.vibrate) navigator.vibrate(10); };
+        row2.addEventListener("pointerdown", (e)=>{ sx=e.clientX; sy=e.clientY; moved=false;
+          if(e.target.closest(".handle")) start(e); else timer=setTimeout(()=>start(e), 350); });
+        row2.addEventListener("pointermove", (e)=>{
+          if(!dragging){ if(timer && (Math.abs(e.clientX-sx)>8 || Math.abs(e.clientY-sy)>8)){
+            clearTimeout(timer); timer=null; } return; }
+          e.preventDefault();
+          const others = Array.prototype.slice.call(list.querySelectorAll(".fvRow")).filter(r=>r!==row2);
+          for(let i=0;i<others.length;i++){ const b=others[i].getBoundingClientRect();
+            if(e.clientY < b.top + b.height/2){ list.insertBefore(row2, others[i]); return; } }
+          list.appendChild(row2);
+        });
+        const end = ()=>{ clearTimeout(timer); timer=null; if(!dragging) return; dragging=false;
+          row2.classList.remove("lift"); list.classList.remove("reordering");
+          const ids = Array.prototype.slice.call(list.querySelectorAll(".fvRow[data-id]")).map(r=>r.dataset.id);
+          if(window.fvSec) window.fvSec.apply(ids);      // DOM 重排 + glueOv + seclayout 落盘 (自动云同步)
+          const sv = root.querySelector(".saved");
+          if(sv){ sv.classList.add("show"); setTimeout(()=>sv.classList.remove("show"), 2000); } };
+        row2.addEventListener("pointerup", end);
+        row2.addEventListener("pointercancel", end);
+        row2.addEventListener("click", ()=>{ if(moved) return; const id=row2.dataset.id;
+          closeSheet(); setTimeout(()=>goSec(id), 30); });
+      });
+    }
+    // ---- 账号抽屉 ----
+    function acctHTML(){
+      const n = (window.fvSyncState ? window.fvSyncState().pending : 0);
+      const st = n ? t("acct_pending").replace("{n}", n) : t("acct_synced");
+      return '<div class="fvGrab"></div>'+
+        '<div class="fvSet"><span class="fvAv">'+escH(String(FV_USER||"?").slice(0,1).toUpperCase())+"</span>"+
+          '<span class="k"><b>'+escH(String(FV_USER||""))+"</b></span>"+
+          '<span class="dpill '+(n?"mid":"ok")+'" style="margin-top:0">'+escH(st)+"</span></div>"+
+        '<button class="fvBig" id="mbLogout">'+escH(t("acct_logout"))+"</button>";
+    }
+    function acctTab(){
+      const ab = $$("authBtn");
+      if(!FV_USER){ closeSheet(); if(ab && ab.style.display!=="none"){ ab.click(); }
+        else openSheet("acct", '<div class="fvGrab"></div><div class="fvSet"><span class="k">'+
+          escH(t("acct_local"))+"</span></div>"); return; }
+      openSheet("acct", acctHTML(), (root)=>{ const b=root.querySelector("#mbLogout");
+        if(b) b.onclick = ()=>{ closeSheet(); if(ab) ab.click(); }; });
+    }
+    TABS.forEach(x=>{ const b=$$(x.id); if(!b) return;
+      b.onclick = ()=>{
+        if(x.id==="tabMore"){ openSheet("more", moreHTML(), bindMore); return; }
+        if(x.id==="tabAcct"){ acctTab(); return; }
+        closeSheet(); act = x.id; lamps(); goSec(x.sec);
+      }; });
+    // ---- 页头: 日期选择器移到第二行右端 (窄屏), 免责声明可展开 ----
+    const mq = window.matchMedia("(max-width:960px)");
+    const r2 = document.querySelector(".hdr-row2"), r1 = document.querySelector(".hdr-row1");
+    const sel = $$("dateSel");
+    const placeDate = ()=>{ if(!sel||!r1||!r2) return;
+      if(mq.matches){ if(sel.parentElement!==r2) r2.appendChild(sel); }
+      else if(sel.parentElement!==r1){ const scr=$$("dateScrub"); r1.insertBefore(sel, scr||null); } };
+    placeDate();
+    if(mq.addEventListener) mq.addEventListener("change", placeDate); else if(mq.addListener) mq.addListener(placeDate);
+    const disc = document.querySelector('[data-i18n-html="disclaimer"]');
+    if(disc) disc.onclick = ()=>disc.classList.toggle("open");
+    // ---- 深链: #tblCard 等 hash 直达并点亮 ----
+    const hash = (location.hash||"").slice(1);
+    if(hash && $$(hash)){ const hit = TABS.find(x=>x.sec===hash);
+      if(hit){ act = hit.id; lamps(); }
+      setTimeout(()=>goSec(hash), 120); }
+  })();
+
   LS.init({$, t, isNum, escH, tagClass, tagText, dash, getData:()=>DATA, getLive:()=>LIVE_DATA, openDetail, getCur:()=>curC, market: LS_MARKET});
   setTimeout(()=>{ LS.renderBacktest(); LS.renderCuosha(); LS.renderQuality(); LS.renderJournal(); LS.renderPaper(); LS.renderBiweekly(); LS.renderDeck(); LS.renderCustomPf(); }, 0);
 })();
