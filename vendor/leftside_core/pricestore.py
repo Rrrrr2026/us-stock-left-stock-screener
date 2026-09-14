@@ -744,6 +744,7 @@ def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9,
                  n_total, pending[0], pending[-1], max_days)
         n_bars, touched = 0, set()
         n_done, stopped = 0, False
+        n_idx = 0                            # 当日指数入库根数 (尽力而为, 见 _update_index_by_date)
         listed_n = conn.execute("SELECT COUNT(*) FROM universe WHERE status='L'").fetchone()[0] or 0
         min_rows = listed_n * ready_ratio    # 不取整: 2 只在市时 90% 是 1.8, 回来 1 只就该判残缺
         while pending and not stopped:
@@ -819,6 +820,7 @@ def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9,
                 conn.execute("DELETE FROM meta WHERE key=?", (PENDING_MAT_KEY,))
                 log.info("价格库增量: 因子变动 %d 只已整段重物化", len(changed))
             conn.commit()
+            n_idx += _update_index_by_date(m, conn, done)
             n_done += len(done)
             left = len(pending) + len(chunk) - len(done)
             if done:
@@ -834,9 +836,64 @@ def _update_daily_by_date(m, max_days: int = 40, ready_ratio: float = 0.9,
         log.info("价格库增量: %d/%d 个交易日入库, %d 根, 触及 %d 只 (末日 %s)%s",
                  n_done, n_total, n_bars, len(touched), newest,
                  "" if n_done == n_total else ", 剩 %d 日下次再补" % (n_total - n_done))
+        if n_done:
+            idx_max = conn.execute("SELECT MAX(d) FROM idx_bars").fetchone()[0]
+            log.info("价格库增量: 基准指数 +%d 根 (idx_bars 末日 %s%s)", n_idx, idx_max,
+                     "" if idx_max == newest else " — **落后个股末日 %s**, 流水线的 data_date 仍以"
+                     "个股末日为准, 末尾 ingest_cache_to_pricestore 再补指数" % newest)
         return n_bars
     finally:
         conn.close()
+
+
+def _update_index_by_date(m, conn: sqlite3.Connection, days: list) -> int:
+    """当日基准指数随个股同一步入库 idx_bars (2026-09-14 卡 DATA-DATE)。-> 写入根数。
+
+    **为什么要在这里写, 而不是等流水线末尾的 ingest**: 09-14 是跑批挪到 10:00 CEST (北京 16:00)
+    的首日 —— `pricestore update` 10:01 把个股写到 09-14, 指数表却要等流水线跑完、末尾的
+    `ingest_cache_to_pricestore.py` (11:19) 才补到 09-14; 中间那一小时里流水线拿基准序列末日
+    (09-11) 当了 data_date, 快照/看板/模拟盘登记全部错标 (与 09-09 处理的 08-24 错标同形)。
+    个股与指数是**两条腿**, 挪时点之后两条腿之间那段空窗每天都会出现, 所以指数也得在 update
+    这一步就位。data_date 的定义已另行改成"库内个股末日" (a-share `ashare/datadate.py`), 这里
+    只是让 fetch_benchmark 在流水线开跑时就含当日, 不再是 data_date 的依据。
+
+    **尽力而为, 不是守卫**: Tushare 镜像的 index_daily 当日到达时间未实测 (个股 daily 是北京
+    15:45 整批到; 指数是另一个端点), 拉不到/抛错只 warning 并沿用旧指数 —— 个股那一步已经成功,
+    不能因为指数没到就把库停在昨天; 末尾的 ingest 还有一次补缺机会 (bench 缓存 -> fill_index_gaps)。
+    钩子不存在 (美股库 / 老 Market) 直接返回 0, 一行日志都不打。
+    """
+    fn = getattr(m, "fetch_index_by_date", None)
+    if fn is None or not days:
+        return 0
+    n = 0
+    for d in days:
+        try:
+            row = fn(d)
+        except Exception as e:                # noqa: BLE001  (指数拉挂不能拖垮个股增量)
+            log.warning("价格库增量: 基准指数 %s 拉取失败 (%s) — 沿用旧指数, 末尾 ingest 再补",
+                        d, str(e)[:120])
+            continue
+        if not row:
+            log.warning("价格库增量: 基准指数 %s 源尚无当日 bar (index_daily 空) — 沿用旧指数, "
+                        "末尾 ingest_cache_to_pricestore 再补; 若连着几天都这样, 记下时刻交 SRE 重定", d)
+            continue
+        try:
+            o, h, l, c, v = (float(row[0]), float(row[1]), float(row[2]), float(row[3]),
+                             float(row[4]))
+        except (TypeError, ValueError, IndexError):
+            log.warning("价格库增量: 基准指数 %s 返回形状不对 (%r), 跳过", d, row)
+            continue
+        if h < l or min(o, h, l, c) <= 0 or v < 0:
+            log.warning("价格库增量: 基准指数 %s 数值不合法 (o=%s h=%s l=%s c=%s v=%s), 跳过",
+                        d, o, h, l, c, v)
+            continue
+        conn.execute("INSERT OR REPLACE INTO idx_bars(d,o,h,l,c,v) VALUES(?,?,?,?,?,?)",
+                     (d, o, h, l, c, v))
+        n += 1
+        log.info("价格库增量: 基准指数 %s 入库 (收 %.4f)", d, c)
+    if n:
+        conn.commit()
+    return n
 
 
 def _refresh_universe(m, conn: sqlite3.Connection) -> int:

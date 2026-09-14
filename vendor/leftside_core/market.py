@@ -52,6 +52,11 @@ class Market:
     fetch_adj_by_date: Optional[Callable[[str], dict]] = None           # (d) -> {code: factor} 复权因子
     trading_days: Optional[Callable[[str, str], list]] = None           # (start,end) -> ['YYYY-MM-DD',...] 开市日
     fetch_universe_rows: Optional[Callable[[], list]] = None            # () -> [(code,name,list_date,delist_date,status)]
+    # 基准指数**按交易日单根**取数 (2026-09-14 卡 DATA-DATE): 让 `pricestore update` 在写当日个股的
+    # 同一步把当日指数写进 idx_bars, 流水线开跑时 fetch_benchmark 就已含当日 —— 09-14 首个 10:00 跑批
+    # 里个股 10:01 就入库了, 指数却要等跑完 (11:19 的 ingest) 才补, 中间跑的流水线拿指数末日 09-11 当
+    # 了 data_date。尽力而为: 返回 None = 未启用 / 源尚无当日 bar, pricestore 只 warning 不停下。
+    fetch_index_by_date: Optional[Callable[[str], tuple]] = None        # (d) -> (o,h,l,c,v) v=手; None=未到
     log_prefix: str = "leftside_core"
 
 
