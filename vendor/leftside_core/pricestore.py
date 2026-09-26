@@ -359,7 +359,7 @@ def universe_at(date: str, conn: sqlite3.Connection | None = None,
     """某日**在市且买得到**的代码 —— 点时股票池, 修幸存者偏差用。
 
     exclude_st=True (2026-09-26 卡 ENGINE-UAT) 再按 namechange 点时剔掉当日 ST / *ST /
-    退市整理期的票 (见 st_timeline_from_rows); 默认 False = 原语义不变 (validate_a_pricestore
+    退市整理期的票 (见 st_timeline_from_rows: 只按当天已有的行, 当前名只从改名史覆盖末日次日起生效); 默认 False = 原语义不变 (validate_a_pricestore
     的独立复算对账的就是这个默认口径)。
 
     三条判据同时成立才入池:
@@ -413,10 +413,21 @@ def universe_at(date: str, conn: sqlite3.Connection | None = None,
 PIT_ENV = "FVLAB_UNIVERSE_PIT"
 _PIT_OFF_TOKENS = {"0", "false", "no", "off"}
 
-#: namechange.change_reason 的读法 (Tushare 兼容镜像, 2026-09-26 在生产库 4,320 行上核过):
-#: 状态从 start_date 起生效。`name` 列在 2026 年的一部分行写的是**改名前**的旧名 (镜像在公告时
-#: 写入、之后不更新: '富煌钢构' 2026-09-08 理由 ST, 而 universe 当前名已是 'ST富煌'), 所以 ST 状态
-#: 优先按 change_reason 判, 只有理由本身不含 ST 语义的行 (改名 / 其他 / ...) 才看名字。
+#: namechange.change_reason 的读法 (Tushare 兼容镜像, 2026-09-26 在生产库 4,320 行上核过, 回修时用
+#: 09-26 的一次全表重拉复核 —— 同样 4,320 行, 只多 5 行 2026 / 补了 end_date): 状态从 start_date 起生效。
+#: `name` 列在 2026 年的行写的是**改名前**的旧名 (镜像在公告时写入、之后不更新: '富煌钢构' 2026-09-08
+#: 理由 ST, 而 universe 当前名已是 'ST富煌'), 所以 ST 状态优先按 change_reason 判, 只有理由本身不含 ST
+#: 语义的行 (改名 / 其他 / ...) 才看名字。**2026 年行的理由也不可靠** ('天际股份' 2026-07-15 理由 撤销ST
+#: 而当前名 ST天际 = 实为戴帽; '*ST华闻' 连续两行 撤销ST 而当前仍 ST华闻), 重拉得到的是同样的行。
+#: 所以 (2026-09-26 回修, 校验员 MEDIUM「拿今天的名字回溯剔历史」):
+#:   · **首行之前一律不剔** (没有证据 = 不剔): 首行是 撤销ST / 摘星 也不推断「之前是 ST」—— 生产库里
+#:     2016-09 之后首行为 撤销ST 的 7 只, 6 只是 2026 老名行或 -U 摘牌 (百利天恒), 推断会把整段正常史
+#:     (天际股份 2,437 根 / 百利天恒 538 根 …) 当 ST 剔掉; 代价只有 600793 宜宾纸业 2016-09..11 的
+#:     49 根真 ST 期 bar 不剔 (镜像没有它 2016 之前的戴帽行)。
+#:   · **当前名只从「改名史覆盖末日」的次日起生效** (覆盖末日 = namechange 最大 start_date 与 meta
+#:     namechange_asof 的较大者, st_coverage()): 今天的名字是今天的真值, 但改名日期不知道, 不能回溯到
+#:     最后一行之前 —— 无改名史的 ST 票 (600439 / 688189) 与最后一行和当前名相反的票 (002759 …) 在覆盖
+#:     末日之前按行上的证据, 之后按当前名; 这些票 pit_unresolved() 列出、口径行点名, 让人决定。
 ST_ON_REASONS = frozenset({"ST", "*ST", "摘星"})            # 摘星 = *ST -> ST, 仍是 ST
 ST_OFF_REASONS = frozenset({"撤销ST", "摘星改名"})            # 摘星改名 = *ST -> 普通新名
 _ST_CACHE: dict = {}
@@ -478,42 +489,47 @@ def st_state_after(name, reason, prev) -> bool:
     return "ST" in name
 
 
-def st_state_before_first(reason) -> bool:
-    """第一条行之前的状态: 撤销 / 摘星类说明之前是 ST; 其余 (ST / *ST / 改名 / ...) 当作不是。"""
-    return str(reason or "").strip() in ("撤销ST", "撤销*ST", "摘星", "摘星改名")
-
-
-def st_timeline_from_rows(rows, cur_name, listed: bool) -> list:
+def st_timeline_from_rows(rows, cur_name, listed: bool, coverage_end: str | None = None) -> list:
     """一只票的 namechange 行 [(name, start_date, reason), ...] -> 点时剔除时间线
-    [(生效日, 是否剔除), ...], 生效日升序, 第一条固定为 '0000-00-00' (起始状态)。
+    [(生效日, 是否剔除), ...], 生效日升序, 第一条固定为 '0000-00-00' (起始状态 = **不剔**: 首行之前没有证据)。
 
-    cur_name = universe 里的当前名字 (今天的真值), listed = 仍在市。**仍在市的票最后一段以当前
-    名字为准**: 镜像的行有缺 (今天 318 只 ST 里 42 只一条行都没有) 也有旧名, 而 universe.name 每天
-    由 pricestore update 刷新 —— 今天的状态一定对, 只有中间段才靠状态机。退市票不做这一步: 它的
+    只用「当天已有的行」判当天 (点时): 首行是 撤销ST / 摘星 也**不**推断之前是 ST (模块注释: 生产库里这种
+    首行 6/7 是镜像 2026 老名行或 -U 摘牌, 推断 = 拿今天的名字回溯剔历史)。
+    cur_name = universe 里的当前名字 (今天的真值), listed = 仍在市, coverage_end = 改名史覆盖末日
+    (_st_tables 传整张表的; 不传时取该票最后一行的日期; 整张表为空时 None)。**在市票只从覆盖末日的次日起
+    按当前名**: 行上的最终状态与当前名一致 -> 不加段; 不一致 (镜像缺最近一行 / 2026 行写反) -> 覆盖末日
+    之前照行上的证据, 次日起按当前名 (今天一定对, 但改名日期不知道, 所以不回溯)。退市票不做这一步: 它的
     当前名是退市整理期的名字 ('国华退'), 那一段由 终止上市 行给出。
-    没有任何行 -> 整条时间线 = 当前名字是否含 ST (改名史为空 = 名字从来如此)。
+    整张表为空 (coverage_end None 且无行: 老库 / 没拉过 namechange) -> 只能按当前名, 全史常量 (口径行写明)。
     start_date 为空 / 哨兵的行跳过。同一天两行 (镜像偶有 '*ST深南' 与 '深南退' 同日) 后者覆盖前者。
     """
     cur_st = bool(cur_name) and ("ST" in str(cur_name))
     clean = []
     for name, start, reason in (rows or []):
-        s = norm_date(start)
-        if s:
-            clean.append((s, str(name or ""), str(reason or "")))
-    if not clean:
-        return [("0000-00-00", cur_st)]
+        st = norm_date(start)
+        if st:
+            clean.append((st, str(name or ""), str(reason or "")))
     clean.sort()
-    out = [("0000-00-00", st_state_before_first(clean[0][2]))]
-    prev = out[0][1]
+    out = [("0000-00-00", False)]
+    prev = False
     for start, name, reason in clean:
-        s = st_state_after(name, reason, prev)
+        st = st_state_after(name, reason, prev)
         if out[-1][0] == start:
-            out[-1] = (start, s)
+            out[-1] = (start, st)
         else:
-            out.append((start, s))
-        prev = s
-    if listed and cur_name:
+            out.append((start, st))
+        prev = st
+    if not (listed and cur_name) or prev == cur_st:
+        return out
+    if coverage_end is None:
+        coverage_end = clean[-1][0] if clean else None
+    if coverage_end is None:
+        return [("0000-00-00", cur_st)]
+    b = _next_day(coverage_end)
+    if out[-1][0] >= b:                       # 防御 (覆盖末日 >= 最后一行, 正常不会走到): 最后一段按当前名
         out[-1] = (out[-1][0], cur_st)
+    else:
+        out.append((b, cur_st))
     return out
 
 
@@ -526,8 +542,43 @@ def _excluded_at(tl, d: str) -> bool:
     return bool(tl[i][1]) if i >= 0 else False
 
 
+def _st_rows(conn: sqlite3.Connection) -> tuple:
+    """namechange 全表 -> ({code: [(name, start, reason), ...]}, 覆盖末日|None, 行数)。
+
+    覆盖末日 = 表内最大 start_date 与 meta `namechange_asof` (rebuild --universe-only 刷新时写) 的较大者;
+    表不在 / 为空且无 meta -> None。不缓存 (4,320 行, 每次引擎开跑读一遍可忽略); _st_tables 另按库指纹缓存。
+    """
+    rows: dict = {}
+    n = 0
+    try:
+        for code, name, start, reason in conn.execute(
+                "SELECT code, name, start_date, change_reason FROM namechange"):
+            rows.setdefault(code, []).append((name, start, reason))
+            n += 1
+    except sqlite3.Error:                        # 老库没这张表: 等价于空表
+        rows, n = {}, 0
+    mx = None
+    for rs in rows.values():
+        for _name, start, _reason in rs:
+            d = norm_date(start)
+            if d and (mx is None or d > mx):
+                mx = d
+    try:
+        asof = norm_date(meta_all(conn).get("namechange_asof"))
+    except sqlite3.Error:
+        asof = None
+    cands = [x for x in (mx, asof) if x]
+    return rows, (max(cands) if cands else None), n
+
+
+def st_coverage(conn: sqlite3.Connection | None = None) -> dict:
+    """{coverage_end, n_rows, n_codes}: 改名史覆盖到哪天 (口径行 / 报告用)。"""
+    rows, cov, n = _st_rows(conn or _pit_shared_conn())
+    return {"coverage_end": cov, "n_rows": n, "n_codes": len(rows)}
+
+
 def _st_tables(conn: sqlite3.Connection, refresh: bool = False) -> dict:
-    """{code: 时间线} (st_timeline_from_rows), 按库指纹缓存在进程内。
+    """{code: 时间线} (st_timeline_from_rows, 整张表共用一个覆盖末日), 按库指纹缓存在进程内。
 
     universe 为空 (美股库) -> {}; namechange 表不在 / 为空 -> 只按 universe 当前名 (常量时间线)。
     """
@@ -536,24 +587,46 @@ def _st_tables(conn: sqlite3.Connection, refresh: bool = False) -> dict:
         return _ST_CACHE[key]
     uni = {r[0]: (r[1], norm_date(r[2]))
            for r in conn.execute("SELECT code, name, delist_date FROM universe")}
-    rows: dict = {}
+    rows, cov = {}, None
     if uni:
-        try:
-            for code, name, start, reason in conn.execute(
-                    "SELECT code, name, start_date, change_reason FROM namechange"):
-                rows.setdefault(code, []).append((name, start, reason))
-        except sqlite3.Error:                    # 老库没这张表: 等价于空表
-            rows = {}
+        rows, cov, _n = _st_rows(conn)
     out = {}
     for code, (name, dd) in uni.items():
-        out[code] = st_timeline_from_rows(rows.get(code), name, listed=(dd is None))
+        out[code] = st_timeline_from_rows(rows.get(code), name, listed=(dd is None), coverage_end=cov)
     for code, rs in rows.items():                # 有改名史但不在 universe 的老代码: 只按状态机
         if code not in out:
-            out[code] = st_timeline_from_rows(rs, None, listed=False)
+            out[code] = st_timeline_from_rows(rs, None, listed=False, coverage_end=cov)
     if key:
         if len(_ST_CACHE) > 3:
             _ST_CACHE.clear()
         _ST_CACHE[key] = out
+    return out
+
+
+def pit_unresolved(conn: sqlite3.Connection | None = None) -> dict:
+    """在市票里「改名史与当前名对不上」的三组代码 (口径行点名, 让人决定; 覆盖末日之前它们按行上的证据):
+      no_history           无改名史而当前名带 ST                  -> 覆盖末日前不剔 (全史无证据)
+      history_clean_now_st 最后一行说不是 ST 而当前名带 ST        -> 覆盖末日前不剔 (镜像缺最近一行 / 2026 行写反)
+      history_st_now_clean 最后一行说 ST 而当前名不带 ST          -> 覆盖末日前照剔 (镜像缺摘帽行)
+    + coverage_end / n_rows。universe 为空 -> 三组皆空。"""
+    conn = conn or _pit_shared_conn()
+    rows, cov, n = _st_rows(conn)
+    out = {"coverage_end": cov, "n_rows": n, "no_history": [], "history_clean_now_st": [],
+           "history_st_now_clean": []}
+    for code, name, dd in conn.execute("SELECT code, name, delist_date FROM universe"):
+        if norm_date(dd):
+            continue
+        cur_st = "ST" in str(name or "")
+        rs = rows.get(code)
+        hist = bool(st_timeline_from_rows(rs, None, listed=False)[-1][1])   # 只看行上的证据
+        if cur_st and not rs:
+            out["no_history"].append(code)
+        elif cur_st and not hist:
+            out["history_clean_now_st"].append(code)
+        elif hist and not cur_st:
+            out["history_st_now_clean"].append(code)
+    for k in ("no_history", "history_clean_now_st", "history_st_now_clean"):
+        out[k].sort()
     return out
 
 
@@ -666,9 +739,31 @@ def pit_universe_line(date: str | None = None, conn: sqlite3.Connection | None =
     d = str(date)[:10]
     n_all = len(universe_at(d, conn))
     n_pit = len(universe_at(d, conn, exclude_st=True))
-    return (f"宇宙: 点时 (universe_at) {n_pit} 只 / 现存股 {n_listed} 只 / "
+    head = (f"宇宙: 点时 (universe_at) {n_pit} 只 / 现存股 {n_listed} 只 / "
             f"剔 ST {n_all - n_pit} 只 @{d} ({PIT_ENV}=1; universe {n_uni} 只含退市 "
             f"{n_uni - n_listed} 只, ST 含 *ST 与退市整理期, 逐 bar 按 pit_mask 剔)")
+    return head + pit_coverage_clause(conn)
+
+
+def pit_coverage_clause(conn: sqlite3.Connection | None = None, max_codes: int = 12) -> str:
+    """口径行的第二句: 改名史覆盖到哪天、哪些在市票的改名史与当前名对不上 (pit_unresolved), 让人一眼看到。"""
+    conn = conn or _pit_shared_conn()
+    u = pit_unresolved(conn)
+    cov = u["coverage_end"]
+    if cov is None:
+        return "; namechange 表空: ST 只按 universe 当前名 (全史常量, 无点时证据)"
+
+    def lst(codes):
+        if not codes:
+            return "—"
+        return " ".join(codes[:max_codes]) + (f" …+{len(codes) - max_codes}" if len(codes) > max_codes else "")
+
+    n_now = len(u["no_history"]) + len(u["history_clean_now_st"])
+    return (f"; 改名史覆盖到 {cov} ({u['n_rows']} 行): 之前逐行点时, 次日起按当前名 —— "
+            f"今日 ST 名票中无点时证据 {n_now} 只 (无改名史 {len(u['no_history'])}: {lst(u['no_history'])}; "
+            f"最后一行相反 {len(u['history_clean_now_st'])}: {lst(u['history_clean_now_st'])}) 覆盖末日前不剔; "
+            f"改名史仍 ST 而今日清洁 {len(u['history_st_now_clean'])} 只 ({lst(u['history_st_now_clean'])}) "
+            f"覆盖末日前照剔")
 
 
 def pit_warn_unavailable(tag: str, log_=None) -> None:
