@@ -77,6 +77,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                  "code TEXT PRIMARY KEY, name TEXT, list_date TEXT, delist_date TEXT, "
                  "status TEXT) WITHOUT ROWID")
     conn.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT) WITHOUT ROWID")
+    # 改名 / ST 点时史 (Tushare namechange; 与 research/rebuild_a_pricestore_tushare.py 的 DDL 同字)。
+    # 2026-09-26 卡 ENGINE-UAT 起 pit_mask / universe_at(exclude_st=True) 读它做点时剔 ST;
+    # 美股库建了也是空表, 空表 = 不剔 (与 universe 为空的处理一样, 不猜)。
+    conn.execute("CREATE TABLE IF NOT EXISTS namechange("
+                 "code TEXT, name TEXT, start_date TEXT, end_date TEXT, ann_date TEXT, "
+                 "change_reason TEXT, PRIMARY KEY(code, start_date, name)) WITHOUT ROWID")
     # v1 老库的 bars 没有 amt 列 -> 补上 (老行为 NULL, 消费者按 6 列读, 无感)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(bars)")}
     if cols and "amt" not in cols:
@@ -348,8 +354,13 @@ def first_bar_dates(conn: sqlite3.Connection | None = None, refresh: bool = Fals
             conn.close()
 
 
-def universe_at(date: str, conn: sqlite3.Connection | None = None) -> list:
+def universe_at(date: str, conn: sqlite3.Connection | None = None,
+                exclude_st: bool = False) -> list:
     """某日**在市且买得到**的代码 —— 点时股票池, 修幸存者偏差用。
+
+    exclude_st=True (2026-09-26 卡 ENGINE-UAT) 再按 namechange 点时剔掉当日 ST / *ST /
+    退市整理期的票 (见 st_timeline_from_rows); 默认 False = 原语义不变 (validate_a_pricestore
+    的独立复算对账的就是这个默认口径)。
 
     三条判据同时成立才入池:
       · **退市**: delist_date 为空 (还在市) 或 > d —— 退市当日即出池;
@@ -383,10 +394,290 @@ def universe_at(date: str, conn: sqlite3.Connection | None = None) -> list:
                 continue
             out.append(code)
         out.sort()
+        if exclude_st and out:
+            tls = _st_tables(conn)
+            out = [c for c in out if not _excluded_at(tls.get(c), d)]
         return out
     finally:
         if own:
             conn.close()
+
+
+# ------------------------------------------------------------------ 点时 ST / 退市整理期 (namechange) + 引擎钩子
+#
+# 2026-09-26 卡 ENGINE-UAT (研究备忘 §3 第 0 步): 九年引擎与 fvlab 的股票池改成"逐 bar 点时":
+# 某根 bar 能不能出信号 = 当天 code ∈ universe_at(d) 且不在 ST / *ST / 退市整理期。
+# 开关 FVLAB_UNIVERSE_PIT (默认开; =0 回旧行为: 库里有 bar 就扫, 不剔退市/ST)。
+
+#: 点时股票池开关的环境变量名 (fvlab 与四条九年引擎共用同一个名字)。
+PIT_ENV = "FVLAB_UNIVERSE_PIT"
+_PIT_OFF_TOKENS = {"0", "false", "no", "off"}
+
+#: namechange.change_reason 的读法 (Tushare 兼容镜像, 2026-09-26 在生产库 4,320 行上核过):
+#: 状态从 start_date 起生效。`name` 列在 2026 年的一部分行写的是**改名前**的旧名 (镜像在公告时
+#: 写入、之后不更新: '富煌钢构' 2026-09-08 理由 ST, 而 universe 当前名已是 'ST富煌'), 所以 ST 状态
+#: 优先按 change_reason 判, 只有理由本身不含 ST 语义的行 (改名 / 其他 / ...) 才看名字。
+ST_ON_REASONS = frozenset({"ST", "*ST", "摘星"})            # 摘星 = *ST -> ST, 仍是 ST
+ST_OFF_REASONS = frozenset({"撤销ST", "摘星改名"})            # 摘星改名 = *ST -> 普通新名
+_ST_CACHE: dict = {}
+_UNI_MAP_CACHE: dict = {}
+_NO_TL = (("0000-00-00", False),)
+_PIT_WARNED: set = set()
+#: 点时查询共用的一条连接 (按库路径缓存): 九年引擎逐票调 pit_mask 五千多次, 每次 _conn() 都要在
+#: 2 GB 的 WAL 库上走一遍建表语句, 实测把 fastscan 从 40 秒拖到分钟级; 表内容按库指纹另有缓存。
+_PIT_CONN: dict = {"path": None, "conn": None}
+
+
+def _pit_shared_conn() -> sqlite3.Connection:
+    path = _db_path()
+    c = _PIT_CONN["conn"]
+    if c is not None and _PIT_CONN["path"] == path:
+        return c
+    if c is not None:
+        try:
+            c.close()
+        except sqlite3.Error:
+            pass
+    c = _conn(path)
+    _PIT_CONN["path"], _PIT_CONN["conn"] = path, c
+    return c
+
+
+def pit_enabled() -> bool:
+    """FVLAB_UNIVERSE_PIT: 未设 / 1 = 开 (点时股票池, 默认); 0 / false / no / off = 旧行为。"""
+    v = os.environ.get(PIT_ENV)
+    if v is None:
+        return True
+    return v.strip().lower() not in _PIT_OFF_TOKENS
+
+
+def st_state_after(name, reason, prev) -> bool:
+    """一条 namechange 行生效后, 这只票是否属于"点时剔除" (ST / *ST / 退市整理期)。
+
+    prev = 该行之前的状态 (None = 不知道)。判据按可靠程度排:
+      · reason ∈ ST_ON_REASONS -> True; reason ∈ ST_OFF_REASONS -> False (不看名字)
+      · 撤销*ST: 可能是 *ST -> ST (仍 ST, 新名形如 'ST景峰') 也可能 -> 普通名; 只能看名字:
+        名字含 ST 且不以 * 开头 -> True; 其余 (含镜像写成旧名的 '*ST宝实') -> False
+      · 终止上市: 名字带 退 / ST (退市整理期 '退市创兴' / 'XX退' / '*ST深南') -> True (整理期不进池);
+        否则沿用 prev —— 镜像 2026 年给若干在市正常股也标了 '终止上市' (紫金银行 / 精达股份 /
+        奕瑞科技 …, 生产库实核 20 余只), 不能因此把它们剔掉
+      · 其余 (改名 / 其他 / 完成股改 / 恢复上市): 名字含 ST -> True
+    """
+    name = str(name or "")
+    reason = str(reason or "").strip()
+    if reason in ST_ON_REASONS:
+        return True
+    if reason in ST_OFF_REASONS:
+        return False
+    if reason == "撤销*ST":
+        return ("ST" in name) and not name.startswith("*")
+    if reason == "终止上市":
+        if "退" in name or "ST" in name:
+            return True
+        return bool(prev) if prev is not None else False
+    return "ST" in name
+
+
+def st_state_before_first(reason) -> bool:
+    """第一条行之前的状态: 撤销 / 摘星类说明之前是 ST; 其余 (ST / *ST / 改名 / ...) 当作不是。"""
+    return str(reason or "").strip() in ("撤销ST", "撤销*ST", "摘星", "摘星改名")
+
+
+def st_timeline_from_rows(rows, cur_name, listed: bool) -> list:
+    """一只票的 namechange 行 [(name, start_date, reason), ...] -> 点时剔除时间线
+    [(生效日, 是否剔除), ...], 生效日升序, 第一条固定为 '0000-00-00' (起始状态)。
+
+    cur_name = universe 里的当前名字 (今天的真值), listed = 仍在市。**仍在市的票最后一段以当前
+    名字为准**: 镜像的行有缺 (今天 318 只 ST 里 42 只一条行都没有) 也有旧名, 而 universe.name 每天
+    由 pricestore update 刷新 —— 今天的状态一定对, 只有中间段才靠状态机。退市票不做这一步: 它的
+    当前名是退市整理期的名字 ('国华退'), 那一段由 终止上市 行给出。
+    没有任何行 -> 整条时间线 = 当前名字是否含 ST (改名史为空 = 名字从来如此)。
+    start_date 为空 / 哨兵的行跳过。同一天两行 (镜像偶有 '*ST深南' 与 '深南退' 同日) 后者覆盖前者。
+    """
+    cur_st = bool(cur_name) and ("ST" in str(cur_name))
+    clean = []
+    for name, start, reason in (rows or []):
+        s = norm_date(start)
+        if s:
+            clean.append((s, str(name or ""), str(reason or "")))
+    if not clean:
+        return [("0000-00-00", cur_st)]
+    clean.sort()
+    out = [("0000-00-00", st_state_before_first(clean[0][2]))]
+    prev = out[0][1]
+    for start, name, reason in clean:
+        s = st_state_after(name, reason, prev)
+        if out[-1][0] == start:
+            out[-1] = (start, s)
+        else:
+            out.append((start, s))
+        prev = s
+    if listed and cur_name:
+        out[-1] = (out[-1][0], cur_st)
+    return out
+
+
+def _excluded_at(tl, d: str) -> bool:
+    """时间线 + 日期 -> 该日是否剔除 (取最后一条生效日 <= d 的段; 没有时间线 = 不剔)。"""
+    if not tl:
+        return False
+    import bisect
+    i = bisect.bisect_right([x[0] for x in tl], d) - 1
+    return bool(tl[i][1]) if i >= 0 else False
+
+
+def _st_tables(conn: sqlite3.Connection, refresh: bool = False) -> dict:
+    """{code: 时间线} (st_timeline_from_rows), 按库指纹缓存在进程内。
+
+    universe 为空 (美股库) -> {}; namechange 表不在 / 为空 -> 只按 universe 当前名 (常量时间线)。
+    """
+    key = _db_fingerprint(conn)
+    if key and not refresh and key in _ST_CACHE:
+        return _ST_CACHE[key]
+    uni = {r[0]: (r[1], norm_date(r[2]))
+           for r in conn.execute("SELECT code, name, delist_date FROM universe")}
+    rows: dict = {}
+    if uni:
+        try:
+            for code, name, start, reason in conn.execute(
+                    "SELECT code, name, start_date, change_reason FROM namechange"):
+                rows.setdefault(code, []).append((name, start, reason))
+        except sqlite3.Error:                    # 老库没这张表: 等价于空表
+            rows = {}
+    out = {}
+    for code, (name, dd) in uni.items():
+        out[code] = st_timeline_from_rows(rows.get(code), name, listed=(dd is None))
+    for code, rs in rows.items():                # 有改名史但不在 universe 的老代码: 只按状态机
+        if code not in out:
+            out[code] = st_timeline_from_rows(rs, None, listed=False)
+    if key:
+        if len(_ST_CACHE) > 3:
+            _ST_CACHE.clear()
+        _ST_CACHE[key] = out
+    return out
+
+
+def _uni_map(conn: sqlite3.Connection) -> dict:
+    """{code: (list_date|None, delist_date|None)}, 与 _pit_tables 同一份数据、同一把缓存键。"""
+    key = _db_fingerprint(conn)
+    if key and key in _UNI_MAP_CACHE:
+        return _UNI_MAP_CACHE[key]
+    uni, _first = _pit_tables(conn)
+    m = {code: (ld, dd) for code, ld, dd in uni}
+    if key:
+        if len(_UNI_MAP_CACHE) > 3:
+            _UNI_MAP_CACHE.clear()
+        _UNI_MAP_CACHE[key] = m
+    return m
+
+
+def st_timeline(conn: sqlite3.Connection | None = None, refresh: bool = False) -> dict:
+    """{code: [(生效日, 是否剔除), ...]} —— 点时 ST / 退市整理期时间线 (进程内按库指纹缓存)。"""
+    return _st_tables(conn or _pit_shared_conn(), refresh)
+
+
+def st_codes_at(date: str, conn: sqlite3.Connection | None = None) -> set:
+    """某日点时剔除 (ST / *ST / 退市整理期) 的代码集合 (不管在不在市)。"""
+    d = str(date)[:10]
+    conn = conn or _pit_shared_conn()
+    return {code for code, tl in _st_tables(conn).items() if _excluded_at(tl, d)}
+
+
+class PitMask:
+    """pit_mask 的结果: mask[t] = dates[t] 那根 bar 当天可出信号; 两个计数只为日志/报告。"""
+    __slots__ = ("mask", "n_out", "n_st")
+
+    def __init__(self, mask, n_out: int, n_st: int):
+        self.mask, self.n_out, self.n_st = mask, int(n_out), int(n_st)
+
+    def __len__(self):
+        return len(self.mask)
+
+    def __getitem__(self, i):
+        return self.mask[i]
+
+
+def pit_mask(code: str, dates, conn: sqlite3.Connection | None = None,
+             exclude_st: bool = True):
+    """引擎逐 bar 的点时可用掩码 —— 与 universe_at 逐码等价 (用例对账), 但一次算完整条序列。
+
+    mask[t] 为 True 当且仅当: code ∈ universe_at(dates[t]) (上市日 <= d < 退市日、首根 bar 已到、
+    在 universe 表里) 且 (exclude_st 时) 当天不在 ST / *ST / 退市整理期。
+    -> PitMask(mask, n_out, n_st): n_out = 因"不在市"剔掉的 bar 数, n_st = 因 ST 剔掉的 bar 数。
+    -> None: universe 表为空 (美股库 / 未重建) —— 点时不可用, 调用方退回旧行为 (打一行 warning)。
+    dates 必须升序 (pricestore.load 给的就是)。
+    """
+    import bisect
+    conn = conn or _pit_shared_conn()
+    uni_map = _uni_map(conn)
+    if not uni_map:
+        return None
+    if not isinstance(dates, list):
+        dates = [str(x)[:10] for x in dates]
+    n = len(dates)
+    mask = [False] * n
+    row = uni_map.get(code)
+    if row is None:                           # 不在 universe: universe_at 从不返回它
+        return PitMask(mask, n, 0)
+    ld, dd = row
+    fb = _pit_tables(conn)[1].get(code)
+    if ld is None and not fb:                 # 没上市日又没 bar: 无从判断 (同 universe_at)
+        return PitMask(mask, n, 0)
+    lo = max(x for x in (ld, fb) if x)
+    i0 = bisect.bisect_left(dates, lo)
+    i1 = bisect.bisect_left(dates, dd) if dd else n     # 退市当日即出池 (d < dd)
+    if i1 < i0:
+        i1 = i0
+    for t in range(i0, i1):
+        mask[t] = True
+    n_out = n - (i1 - i0)
+    n_st = 0
+    if exclude_st and i1 > i0:
+        tl = _st_tables(conn).get(code)
+        if tl:
+            for j, (start, bad) in enumerate(tl):
+                if not bad:
+                    continue
+                a = max(bisect.bisect_left(dates, start), i0)
+                b = min(bisect.bisect_left(dates, tl[j + 1][0]) if j + 1 < len(tl) else n, i1)
+                for t in range(a, b):
+                    if mask[t]:
+                        mask[t] = False
+                        n_st += 1
+    return PitMask(mask, n_out, n_st)
+
+
+def pit_universe_line(date: str | None = None, conn: sqlite3.Connection | None = None) -> str:
+    """一行人读的股票池口径 (引擎开跑时打一次):
+    「宇宙: 点时 (universe_at) N 只 / 现存股 M 只 / 剔 ST K 只 @日 …」; 开关关 / 表空时如实写。"""
+    conn = conn or _pit_shared_conn()
+    n_listed = conn.execute("SELECT COUNT(*) FROM universe WHERE delist_date IS NULL "
+                            "OR delist_date=''").fetchone()[0] or 0
+    n_uni = conn.execute("SELECT COUNT(*) FROM universe").fetchone()[0] or 0
+    if not n_uni:
+        return (f"宇宙: universe 表为空 (点时不可用) -> 退回旧行为: 库内有 bar 即扫, "
+                f"不剔退市/ST ({PIT_ENV}={'1' if pit_enabled() else '0'})")
+    if not pit_enabled():
+        return (f"宇宙: 旧行为 ({PIT_ENV}=0): 库内有 bar 即扫, 不剔退市/ST; "
+                f"现存股 {n_listed} 只 / universe {n_uni} 只 (含退市 {n_uni - n_listed} 只)")
+    if not date:
+        mt = meta_all(conn).get("max_trade_date")
+        date = mt or (conn.execute("SELECT MAX(d) FROM bars").fetchone()[0] or "")
+    d = str(date)[:10]
+    n_all = len(universe_at(d, conn))
+    n_pit = len(universe_at(d, conn, exclude_st=True))
+    return (f"宇宙: 点时 (universe_at) {n_pit} 只 / 现存股 {n_listed} 只 / "
+            f"剔 ST {n_all - n_pit} 只 @{d} ({PIT_ENV}=1; universe {n_uni} 只含退市 "
+            f"{n_uni - n_listed} 只, ST 含 *ST 与退市整理期, 逐 bar 按 pit_mask 剔)")
+
+
+def pit_warn_unavailable(tag: str, log_=None) -> None:
+    """universe 表为空时每个引擎只吼一次: 点时不可用, 退回旧行为。"""
+    if tag in _PIT_WARNED:
+        return
+    _PIT_WARNED.add(tag)
+    (log_ or log).warning("%s: universe 表为空, 点时股票池不可用 -> 退回旧行为 (库内有 bar 即扫, "
+                          "不剔退市/ST); 美股库本就如此, A 股库出现这行 = 库没重建", tag)
 
 
 # ------------------------------------------------------------------ 回填 / 增量

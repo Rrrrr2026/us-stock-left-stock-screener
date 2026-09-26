@@ -75,6 +75,9 @@ def scan(codes=None):
     cost = m.cost_rt
     data = ps.load(codes or sorted(ps.last_dates()))
     log.info("fastscan: %d 只票", len(data))
+    pit_on = ps.pit_enabled()                         # 点时股票池 (ENGINE-UAT 第 0 步)
+    log.info("%s", ps.pit_universe_line())
+    pit_c = {"bars_out": 0, "codes_out": 0, "bars_st": 0, "codes_st": 0}
     episodes = []
     from numpy.lib.stride_tricks import sliding_window_view
     for ci, (code, ser) in enumerate(data.items(), 1):
@@ -82,6 +85,16 @@ def scan(codes=None):
         n = len(dates)
         if n < 300:
             continue
+        elig = ps.pit_mask(code, dates) if pit_on else None   # None = 关 / universe 表空 -> 旧行为
+        if elig is None and pit_on:
+            ps.pit_warn_unavailable('fastscan', log)
+        elif elig is not None:
+            if elig.n_out:
+                pit_c["bars_out"] += elig.n_out
+                pit_c["codes_out"] += 1
+            if elig.n_st:
+                pit_c["bars_st"] += elig.n_st
+                pit_c["codes_st"] += 1
         o, h, l, c, v = (ohlcv[:, 0], ohlcv[:, 1], ohlcv[:, 2], ohlcv[:, 3], ohlcv[:, 4])
         rsi, atr = _ind(o, h, l, c)
         roll_hi = np.full(n, np.nan)
@@ -92,6 +105,9 @@ def scan(codes=None):
         while t < n - EV_HOLD - 2:
             if (t < next_ok or np.isnan(rsi[t]) or np.isnan(atr[t])
                     or np.isnan(roll_hi[t]) or c[t] <= 0):
+                t += STRIDE
+                continue
+            if elig is not None and not elig.mask[t]:     # 点时: 当天不在市 / ST -> 不出信号
                 t += STRIDE
                 continue
             cond = (c[t] <= roll_hi[t] * (1.0 - DD_MIN)
@@ -139,6 +155,9 @@ def scan(codes=None):
         if ci % 800 == 0:
             log.info("fastscan %d/%d (eps %d)", ci, len(data), len(episodes))
     log.info("fastscan 完成: %d episodes", len(episodes))
+    if pit_on:
+        log.info("fastscan 点时剔除: 不在市 %d 根 bar / %d 只, ST·退市整理期 %d 根 / %d 只",
+                 pit_c["bars_out"], pit_c["codes_out"], pit_c["bars_st"], pit_c["codes_st"])
     return episodes
 
 

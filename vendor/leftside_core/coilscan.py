@@ -123,15 +123,31 @@ def scan(codes: list | None = None, quality_at=None) -> list[dict]:
     episodes = []
     data = ps.load(conn_codes)
     log.info("形态扫描: %d 只票入库可用", len(data))
+    pit_on = ps.pit_enabled()                         # 点时股票池 (ENGINE-UAT 第 0 步)
+    log.info("%s", ps.pit_universe_line())
+    pit_c = {"bars_out": 0, "codes_out": 0, "bars_st": 0, "codes_st": 0}
     for ci, (code, ser) in enumerate(data.items(), 1):
         dates, ohlcv = ser["dates"], ser["ohlcv"]
         n = len(dates)
+        elig = ps.pit_mask(code, dates) if pit_on else None   # None = 关 / universe 表空 -> 旧行为
+        if elig is None and pit_on:
+            ps.pit_warn_unavailable('coilscan', log)
+        elif elig is not None:
+            if elig.n_out:
+                pit_c["bars_out"] += elig.n_out
+                pit_c["codes_out"] += 1
+            if elig.n_st:
+                pit_c["bars_st"] += elig.n_st
+                pit_c["codes_st"] += 1
         o_, h_, l_, c_, v_ = (ohlcv[:, 0], ohlcv[:, 1], ohlcv[:, 2],
                               ohlcv[:, 3], ohlcv[:, 4])
         next_ok = 0
         t = TREND_W + BOX_W
         while t < n - 1:
             if t < next_ok:
+                t += STRIDE
+                continue
+            if elig is not None and not elig.mask[t]:     # 点时: 当天不在市 / ST -> 不出信号
                 t += STRIDE
                 continue
             box_hi = float(np.max(h_[t - BOX_W + 1:t + 1]))
@@ -171,6 +187,9 @@ def scan(codes: list | None = None, quality_at=None) -> list[dict]:
         if ci % 500 == 0:
             log.info("形态扫描进度 %d/%d (episodes %d)", ci, len(data), len(episodes))
     log.info("形态扫描完成: %d episodes", len(episodes))
+    if pit_on:
+        log.info("coilscan 点时剔除: 不在市 %d 根 bar / %d 只, ST·退市整理期 %d 根 / %d 只",
+                 pit_c["bars_out"], pit_c["codes_out"], pit_c["bars_st"], pit_c["codes_st"])
     return episodes
 
 
