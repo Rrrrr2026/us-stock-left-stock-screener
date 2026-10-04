@@ -978,7 +978,7 @@
       jn_col_stock:"标的", jn_col_open:"买入日", jn_col_closed:"平仓日", jn_col_entry:"买入价", jn_col_now:"最新价", jn_col_exit:"卖出价", jn_col_pnl:"盈亏", jn_col_stop:"止损", jn_col_target:"目标", jn_col_size:"仓位", jn_col_days:"天数", jn_col_reason:"原因",
       jn_btn_close:"平仓", jn_no_live:"该股今天不在榜单内，无最新价；平仓时可手动填价",
       jn_note:"这是你的决策账本：只有你真正采纳的标的才会进来，所以它衡量的是「你的选择」而非系统的榜单。最新价来自当日榜单（不在榜的标的需手动填价）。止损执行率 = 亏损平仓里在止损位附近（≥止损×0.97）离场的比例；盈亏不含手续费。数据保存在本浏览器 localStorage，不上传；换设备请用导出/导入。",
-      news_flag_tip:"近30天新闻标题命中风险关键词", news_title:"近期新闻（🚩=命中风险关键词，仅线索不作判断）", news_none:"近30天无相关新闻标题",
+      news_flag_tip:"近30天新闻标题命中风险关键词", news_title:"近期新闻（🚩=命中风险关键词，仅线索不作判断）", news_none:"近30天无相关新闻标题", news_down:"新闻源不可用：本轮取不到新闻标题，无法判断近30天有无风险标题（不代表没有利空）", news_flag_down:"🚩 新闻源不可用",
       // 财报日 / 状态 / 榜单战绩 / 过期提示
       earn_in:"📅 财报 ", earn_days_u:" 天后", earn_tip:"财报披露日临近：左侧建仓请等财报落地再动手",
       earn_warn_a:"⚠️ 财报前不建仓 —— ", earn_warn_b:" 天后披露财报（", earn_warn_c:"）。一份差财报会把左侧剧本直接打穿；建议等财报落地、支撑重新确认后再按计划执行。",
@@ -1059,7 +1059,7 @@
       // 政策
       policy_note_a:" 板块", policy_note_b:" · 要点为板块级静态梳理，请结合最新新闻核实", policy_generic:"通用",
       // 新闻/期权/暗池
-      nw_none:"暂无新闻", opt_expiry:"最近到期", opt_pc_oi:"Put/Call 持仓比", opt_pc_vol:"Put/Call 成交比",
+      nw_none:"暂无新闻", nw_down:"新闻源不可用", nw_down_note:"本轮全市场都取不到新闻标题（数据源故障），不代表没有利好或利空——请自行查证。", opt_expiry:"最近到期", opt_pc_oi:"Put/Call 持仓比", opt_pc_vol:"Put/Call 成交比",
       opt_maxpain:"最大痛点价", opt_call:"Call 持仓", opt_put:"Put 持仓", opt_none:"暂无期权数据(可能无期权上市)",
       opt_read:"解读: ", opt_read_tail:"。(仅最近到期合约, 样本小时参考意义有限)",
       opt_put_heavy:"Put持仓明显多于Call —— 期权市场防御/看跌仓位偏重",
@@ -1225,7 +1225,7 @@
       jn_col_stock:"Stock", jn_col_open:"Opened", jn_col_closed:"Closed", jn_col_entry:"Entry", jn_col_now:"Last", jn_col_exit:"Exit", jn_col_pnl:"P&L", jn_col_stop:"Stop", jn_col_target:"Target", jn_col_size:"Size", jn_col_days:"Days", jn_col_reason:"Reason",
       jn_btn_close:"Close", jn_no_live:"Not on today's board, so no live price; enter the price manually when closing",
       jn_note:"This is your decision ledger: only names you actually took go in, so it measures your selections rather than the system's boards. Last price comes from today's board (names off the board need a manual price). Stops honored = share of losing exits taken near the stop (≥ stop×0.97); P&L excludes fees. Data lives in this browser's localStorage and is never uploaded; use export/import to move devices.",
-      news_flag_tip:"Risk keywords found in headlines from the last 30 days", news_title:"Recent headlines (🚩 = risk keyword hit; clues, not verdicts)", news_none:"No headlines in the last 30 days",
+      news_flag_tip:"Risk keywords found in headlines from the last 30 days", news_title:"Recent headlines (🚩 = risk keyword hit; clues, not verdicts)", news_none:"No headlines in the last 30 days", news_down:"News feed unavailable: no headlines could be fetched this run, so risk headlines in the last 30 days cannot be ruled out", news_flag_down:"🚩 news feed unavailable",
       // earnings / regime / board record / stale
       earn_in:"📅 earnings in ", earn_days_u:"d", earn_tip:"Earnings report imminent: wait for it before any left-side entry",
       earn_warn_a:"⚠️ No entry before earnings — report in ", earn_warn_b:" days (", earn_warn_c:"). One bad report guts a left-side setup; wait for the print and a re-confirmed support before executing the plan.",
@@ -1296,7 +1296,7 @@
       warn_gov:"ISS overall governance risk ", warn_gov2:"/10 — governance needs close review",
       warn_dd:"1Y max drawdown ", warn_dd2:"% — high catching-a-falling-knife risk",
       policy_note_a:"", policy_note_b:" sector notes are a static overview; verify against the latest news", policy_generic:"General",
-      nw_none:"No news", opt_expiry:"Nearest expiry ", opt_pc_oi:"Put/Call OI ratio", opt_pc_vol:"Put/Call vol ratio",
+      nw_none:"No news", nw_down:"News feed unavailable", nw_down_note:"No headlines could be fetched for any stock in this run (data-source failure). This does not mean there is no good or bad news — please verify yourself.", opt_expiry:"Nearest expiry ", opt_pc_oi:"Put/Call OI ratio", opt_pc_vol:"Put/Call vol ratio",
       opt_maxpain:"Max pain", opt_call:"Call OI", opt_put:"Put OI", opt_none:"No options data (may not be listed)",
       opt_read:"Read: ", opt_read_tail:". (nearest expiry only; small sample = limited signal)",
       opt_put_heavy:"Puts clearly outweigh calls — defensive/bearish positioning",
@@ -2029,6 +2029,10 @@
   function resetGran(){ roeGran="y"; cashGran="y";
     document.querySelectorAll('.granTgl button').forEach(b=>b.classList.toggle('on', b.dataset.g==="y")); }
   function NOPROFhtml(){ return `<div class="p-3 text-slate-500 text-sm">${t("noprof")}</div>`; }
+  // 新闻源体检: 流水线导出时写 meta.news_source_ok (整轮一条标题都没有 / 有标题的票不到两成 = false)。
+  // false 时「利空 0」「无🚩」「近30天无相关新闻标题」都不能照常显示 —— 那只是取不到, 不是没有 (2026-10-02..04 雅虎新闻端点 404 的教训)。
+  // 回看历史日期时 DATA.meta 是那一天的 meta; 旧快照没有这个键 = 照旧显示。
+  function newsDown(){ return ((DATA&&DATA.meta)||{}).news_source_ok === false; }
 
   // ---- ② 公司与业务 ----
   function renderCoTab(){
@@ -2209,9 +2213,12 @@
       $("#dDark").innerHTML=NOPROFhtml(); return; }
     const news=p.news||[];
     const nPos=news.filter(n=>n.tone==="利好").length, nNeg=news.filter(n=>n.tone==="利空").length;
-    $("#dNewsSum").innerHTML=`<span class="badge tag-strong">${t("tone_pos")} ${nPos}</span> <span class="badge tag-warn">${t("tone_neg")} ${nNeg}</span> <span class="badge tag-watch">${t("tone_neutral")} ${news.length-nPos-nNeg}</span>`;
+    // 新闻源整体不可用 (meta.news_source_ok=false) 且这只票没有标题: 不写「利好 0 / 利空 0 / 中性 0」(会被读成没有利空), 明说源不可用
+    const nwDown = !news.length && newsDown();
+    $("#dNewsSum").innerHTML= nwDown ? `<span class="badge tag-warn" id="nwDown">${t("nw_down")}</span>`
+      : `<span class="badge tag-strong">${t("tone_pos")} ${nPos}</span> <span class="badge tag-warn">${t("tone_neg")} ${nNeg}</span> <span class="badge tag-watch">${t("tone_neutral")} ${news.length-nPos-nNeg}</span>`;
     const toneCls={"利好":"tag-strong","利空":"tag-warn","中性":"tag-watch"};
-    $("#dNewsList").innerHTML = news.length? news.map(n=>
+    $("#dNewsList").innerHTML = nwDown ? `<div class="p-3 text-sm" id="nwDownNote" style="color:var(--dim)">${t("nw_down_note")}</div>` : news.length? news.map(n=>
       `<div class="newsrow"><span class="badge ${toneCls[n.tone]} flex-none">${toneText(n.tone)}</span>
         <div class="min-w-0"><a href="${escH(n.url)}" target="_blank" rel="noopener" class="text-[13px] text-slate-100 hover:text-sky-300 hover:underline">${escH(n.title)}</a>
         <div class="text-xs text-slate-500 mt-0.5">${escH(n.publisher)} · ${escH(n.time)}</div></div></div>`).join("")
@@ -2404,8 +2411,8 @@
         csEl.classList.remove("hidden");
         const newsHtml = (Array.isArray(c.news)&&c.news.length)
           ? `<div class="mt-2 text-[11px] text-slate-400">${t("news_title")}</div><ul class="mt-1 space-y-0.5 text-[12px]">`+c.news.map(n=>`<li class="${(n.f&&n.f.length)?"text-rose-200":"text-slate-300"}">${(n.f&&n.f.length)?"🚩 ":""}<span class="text-slate-500 font-mono text-[11px]">${escH(n.d||"")}</span> ${n.u?`<a href="${escH(n.u)}" target="_blank" rel="noopener" class="hover:underline">${escH(n.t||"")}</a>`:escH(n.t||"")}${(n.f&&n.f.length)?` <span class="badge tag-warn !text-[10px] !px-1">${escH(n.f.join("/"))}</span>`:""}</li>`).join("")+`</ul>`
-          : (c.cuosha_score? `<div class="mt-2 text-[11px] text-slate-500">${t("news_none")}</div>` : "");
-        csEl.innerHTML = `<div class="flex items-center gap-2 flex-wrap mb-1"><b class="text-amber-300">💎 ${t("cs_popup_title")}</b><span class="badge tag-warn">${t("cs_col_score")} ${c.cuosha_score}</span>${(c.cuosha_upside>0)?`<span class="badge tag-strong">${t("cs_col_up")} +${c.cuosha_upside}%</span>`:""}${(c.news_flags&&c.news_flags.length)?`<span class="badge tag-warn">🚩 ${escH(c.news_flags.join(" / "))}</span>`:""}</div><div class="text-xs text-slate-400 leading-relaxed">${escH(c.cuosha_note||"")}</div>${newsHtml}`;
+          : (c.cuosha_score? `<div class="mt-2 text-[11px] text-slate-500" id="csNewsNone">${t(newsDown()?"news_down":"news_none")}</div>` : "");
+        csEl.innerHTML = `<div class="flex items-center gap-2 flex-wrap mb-1"><b class="text-amber-300">💎 ${t("cs_popup_title")}</b><span class="badge tag-warn">${t("cs_col_score")} ${c.cuosha_score}</span>${(c.cuosha_upside>0)?`<span class="badge tag-strong">${t("cs_col_up")} +${c.cuosha_upside}%</span>`:""}${(c.news_flags&&c.news_flags.length)?`<span class="badge tag-warn">🚩 ${escH(c.news_flags.join(" / "))}</span>`:((newsDown()&&!(Array.isArray(c.news)&&c.news.length))?`<span class="badge tag-watch" id="csFlagDown">${t("news_flag_down")}</span>`:"")}</div><div class="text-xs text-slate-400 leading-relaxed">${escH(c.cuosha_note||"")}</div>${newsHtml}`;
       } else csEl.classList.add("hidden");
     }
 

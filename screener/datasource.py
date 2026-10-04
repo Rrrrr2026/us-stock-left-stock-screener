@@ -16,6 +16,7 @@ import io
 import re
 import time
 import pickle
+import threading
 import hashlib
 import datetime as dt
 import logging
@@ -767,47 +768,256 @@ def _news_tone(title: str) -> str:
     return "中性"
 
 
+# ---------------------------------------------------------------------------
+#  新闻: 多源兜底 (2026-10-04 卡 NEWS-OVERDUE)
+# ---------------------------------------------------------------------------
+# 雅虎 xhr/ncp 新闻端点 2026-09-29 起 404, yfinance (1.2.1 与最新 1.7.0 同一实现) 吞错返回空列表; 这里原来写的是
+# `tk.news or []` —— 全市场 0 条也不吭声, 看板 10-02 起「利好 0 / 利空 0」「近30天无相关新闻标题」, 读起来像没有利空。
+# 现在每只票按序试四家, 第一家非空即用 (档案新闻 fetch_news 与错杀红旗 market.news_titles 共用这一条链):
+#   ① yfinance Ticker.news            (雅虎 xhr/ncp; 现在是坏的, 留着等它恢复)
+#   ② yfinance Search(...).news       (query2 搜索接口 = 0.2.x 时代 Ticker.news 的实现; 10-04 服务器生产 venv 实测可用)
+#   ③ Yahoo RSS headline feed         (10-04 实测: 本机 200, 服务器 429 —— 数据中心 IP 被限)
+#   ④ Google News RSS search          (两边都 200)
+# 纪律: 每次调用有墙钟硬期限 (线程守护, 不靠 socket 超时); ②③④ 串行 + 最小间隔 (档案阶段是多线程, 不并发敲兜底端点);
+#       某一家连续 _NEWS_BREAK_AFTER 只票没取到 → 本轮熔断, 不再问它; 同一进程内每只票只取一次 (导出要调三遍 build_payload)。
+_NEWS_PROVIDERS = ("yfinance", "yahoo_search", "yahoo_rss", "google_rss")
+_NEWS_DEADLINE_S = 20
+_NEWS_BREAK_AFTER = 8
+_NEWS_GAP_S = 0.25
+_NEWS_FETCH_N = 20
+_NEWS_RSS_MAX_BYTES = 2 * 1024 * 1024
+_YAHOO_RSS_URL = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={sym}&region=US&lang=en-US"
+_GOOGLE_RSS_URL = "https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
+_NEWS_LOCK = threading.Lock()          # 保护下面三个状态
+_NEWS_GATE = threading.Lock()          # 兜底源串行闸
+_NEWS_MEMO: dict = {}                  # yfinance 代码 -> 本轮取到的条目 (空表也记: 四家都问过了)
+_NEWS_FAILS = {p: 0 for p in _NEWS_PROVIDERS}    # 各家连续没取到的票数
+_NEWS_LAST_CALL = [0.0]
+
+
+def _hard_deadline(fn, seconds: float):
+    """在守护线程里跑 fn, 超过 seconds 就放弃 (线程被遗弃)。socket 超时管不住慢慢滴数据的服务器, 硬期限只能靠墙钟。"""
+    box = {}
+
+    def run():
+        try:
+            box["v"] = fn()
+        except BaseException as e:      # noqa: BLE001 —— 原样转交调用方
+            box["e"] = e
+
+    th = threading.Thread(target=run, daemon=True)
+    th.start()
+    th.join(max(0.1, seconds))
+    if th.is_alive():
+        raise TimeoutError(f"超过 {seconds:.0f}s 硬期限")
+    if "e" in box:
+        raise box["e"]
+    return box.get("v")
+
+
+def _news_item(title, publisher, when, url, source) -> dict | None:
+    """统一结构: title / publisher / time ('YYYY-MM-DD HH:MM' UTC, 没有就 '—') / date / url / source。"""
+    title = str(title or "").strip()
+    if not title:
+        return None
+    ts = when.astimezone(dt.timezone.utc).strftime("%Y-%m-%d %H:%M") if isinstance(when, dt.datetime) else None
+    return {"title": title[:300], "publisher": str(publisher or "").strip()[:80] or "—",
+            "time": ts or "—", "date": ts[:10] if ts else "", "url": str(url or "").strip() or "#", "source": source}
+
+
+def parse_yf_news(raw, source: str) -> list:
+    """yfinance 新旧两种新闻结构 ({content:{...}} 与平铺; Search(...).news 是平铺那种) → 统一结构。"""
+    out = []
+    for it in raw or []:
+        if not isinstance(it, dict):
+            continue
+        c = it.get("content") if isinstance(it.get("content"), dict) else it
+        prov = c.get("provider")
+        publisher = (prov or {}).get("displayName") if isinstance(prov, dict) else c.get("publisher")
+        cu = c.get("canonicalUrl")
+        url = (cu.get("url") if isinstance(cu, dict) else None) or c.get("link")
+        when = None
+        ts = c.get("pubDate") or c.get("displayTime")
+        try:
+            if isinstance(ts, str) and ts:
+                when = dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=dt.timezone.utc)
+            elif c.get("providerPublishTime"):
+                when = dt.datetime.fromtimestamp(int(c["providerPublishTime"]), dt.timezone.utc)
+        except (TypeError, ValueError, OSError):
+            when = None
+        item = _news_item(c.get("title"), publisher, when, url, source)
+        if item:
+            out.append(item)
+    return out[:_NEWS_FETCH_N]
+
+
+def parse_rss(xml, source: str) -> list:
+    """RSS 2.0 → 统一结构。Yahoo headline feed 没有出版方字段 (用链接域名), 链接带 `.tsrc=rss` 追踪参数 (去掉);
+    Google News search feed 用 <source> 给出版方, 标题尾巴带「 - 出版方」(去掉)。时间取 pubDate 换成 UTC。
+    带 DTD / 实体声明的文档不解析 (正常 RSS 没有; 挡实体炸弹), 超过 _NEWS_RSS_MAX_BYTES 的也不解析。"""
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+    from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+    raw = xml.encode("utf-8") if isinstance(xml, str) else bytes(xml or b"")
+    if len(raw) > _NEWS_RSS_MAX_BYTES:
+        raise ValueError(f"RSS {len(raw)} 字节超过上限")
+    low = raw.lower()
+    if b"<!doctype" in low or b"<!entity" in low:
+        raise ValueError("RSS 含 DTD/实体声明, 拒绝解析")
+    root = ET.fromstring(raw)
+    out, seen = [], set()
+    for it in root.iter("item"):
+        title = (it.findtext("title") or "").strip()
+        link = (it.findtext("link") or "").strip()
+        try:
+            p = urlsplit(link)
+            q = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True) if not k.startswith(".tsrc")]
+            link, host = urlunsplit((p.scheme, p.netloc, p.path, urlencode(q), p.fragment)), p.netloc.lower()
+        except ValueError:
+            continue
+        if not re.match(r"^https?://", link) or link in seen:
+            continue
+        src = it.find("source")
+        publisher = (src.text or "").strip() if src is not None else ""
+        if publisher and title.endswith(" - " + publisher):
+            title = title[:-len(" - " + publisher)].rstrip()
+        try:
+            when = parsedate_to_datetime((it.findtext("pubDate") or "").strip())
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=dt.timezone.utc)
+        except (TypeError, ValueError, IndexError):
+            continue
+        item = _news_item(title, publisher or (host[4:] if host.startswith("www.") else host), when, link, source)
+        if item:
+            seen.add(link)
+            out.append(item)
+    out.sort(key=lambda x: x["time"], reverse=True)
+    return out[:_NEWS_FETCH_N]
+
+
+def _news_from_ticker(sym: str) -> list:
+    tk = _yf().Ticker(sym)
+    return parse_yf_news(_retry(lambda: tk.news) or [], "yfinance")
+
+
+def _news_from_search(sym: str) -> list:
+    return parse_yf_news(_yf().Search(sym, max_results=1, news_count=_NEWS_FETCH_N).news or [], "yahoo_search")
+
+
+def _news_from_rss(url: str, source: str) -> list:
+    import requests
+    r = requests.get(url, headers={**_UA, "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.5"},
+                     timeout=(5, 10))
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}")
+    return parse_rss(r.content, source)
+
+
+def _news_chain(sym: str) -> list:
+    """(来源名, 调用, 是否走串行闸)。顺序 = 取用优先级。"""
+    from urllib.parse import quote, quote_plus
+    y_url = _YAHOO_RSS_URL.format(sym=quote(sym))
+    g_url = _GOOGLE_RSS_URL.format(q=quote_plus(f"{sym} stock when:7d"))
+    return [("yfinance", lambda: _news_from_ticker(sym), False),
+            ("yahoo_search", lambda: _news_from_search(sym), True),
+            ("yahoo_rss", lambda: _news_from_rss(y_url, "yahoo_rss"), True),
+            ("google_rss", lambda: _news_from_rss(g_url, "google_rss"), True)]
+
+
+def _news_fetch(sym: str) -> list:
+    for name, fn, serial in _news_chain(sym):
+        with _NEWS_LOCK:
+            if _NEWS_FAILS[name] >= _NEWS_BREAK_AFTER:
+                continue                               # 这一家本轮已熔断
+        items = []
+        try:
+            if serial:
+                with _NEWS_GATE:
+                    wait = _NEWS_GAP_S - (time.monotonic() - _NEWS_LAST_CALL[0])
+                    if wait > 0:
+                        time.sleep(wait)
+                    try:
+                        items = _hard_deadline(fn, _NEWS_DEADLINE_S) or []
+                    finally:
+                        _NEWS_LAST_CALL[0] = time.monotonic()
+            else:
+                items = _hard_deadline(fn, _NEWS_DEADLINE_S) or []
+        except Exception as e:                        # noqa: BLE001 —— 新闻永远不许打断流水线
+            log.debug("news %s via %s 失败: %s", sym, name, e)
+            items = []
+        with _NEWS_LOCK:
+            if items:
+                _NEWS_FAILS[name] = 0
+            else:
+                _NEWS_FAILS[name] += 1
+                if _NEWS_FAILS[name] == _NEWS_BREAK_AFTER:
+                    log.warning("新闻源 %s 连续 %d 只票没取到, 本轮不再问它 (改走后面的兜底源)", name, _NEWS_BREAK_AFTER)
+        if items:
+            return items
+    return []
+
+
+def news_items(code: str) -> list:
+    """这只票的新闻 (统一结构, 多源兜底)。同一进程内每只票只取一次 (空结果也记住: 四家都问过了);
+    非空结果另有当日文件缓存 (键 news3; 旧键 news2 是带 tone 的旧结构, 不混用)。永不抛异常。"""
+    sym = _yf_symbol(code)
+    with _NEWS_LOCK:
+        if sym in _NEWS_MEMO:
+            return _NEWS_MEMO[sym]
+    items = None
+    try:
+        key = _cache_key("news3", sym, dt.date.today().isoformat())
+        c = _cache_load(key)
+        if isinstance(c, list) and c:
+            items = c
+        else:
+            items = _news_fetch(sym)
+            if items:
+                _cache_save(key, items)
+    except Exception as e:                            # noqa: BLE001
+        log.debug("news_items %s 失败: %s", code, e)
+        items = items or []
+    with _NEWS_LOCK:
+        _NEWS_MEMO[sym] = items
+    return items
+
+
+def news_round_stats() -> dict:
+    """本进程到目前为止的新闻取数统计 (写进 meta.news_stats, 出事时看是哪一家在供数、哪一家熔断了)。"""
+    with _NEWS_LOCK:
+        memo = dict(_NEWS_MEMO)
+        tripped = [p for p in _NEWS_PROVIDERS if _NEWS_FAILS[p] >= _NEWS_BREAK_AFTER]
+    by: dict = {}
+    for items in memo.values():
+        if items:
+            s = items[0].get("source") or "?"
+            by[s] = by.get(s, 0) + 1
+    return {"fetched": len(memo), "with_news": sum(1 for v in memo.values() if v),
+            "items": sum(len(v) for v in memo.values()), "by_source": by, "tripped": tripped}
+
+
+def reset_news_round() -> None:
+    """清掉本进程的新闻记忆与熔断计数 (用例用; 流水线每天是新进程, 不需要调)。"""
+    with _NEWS_LOCK:
+        _NEWS_MEMO.clear()
+        for p in _NEWS_PROVIDERS:
+            _NEWS_FAILS[p] = 0
+    _NEWS_LAST_CALL[0] = 0.0
+
+
 def fetch_news(code: str, limit: int = 12) -> list:
-    """Yahoo 财经个股新闻 (标题/来源/时间/链接), 关键词法粗分 利好/利空/中性。"""
-    key = _cache_key("news2", code, dt.date.today().isoformat())
-    c = _cache_load(key)
-    if c is not None:
-        return c if isinstance(c, list) else []
+    """个股新闻 (标题/来源/时间/链接), 关键词法粗分 利好/利空/中性。取数见 news_items (多源兜底); source 标明走的哪一家。"""
     out = []
     try:
-        tk = _yf().Ticker(_yf_symbol(code))
-        raw = _retry(lambda: tk.news) or []
-        for it in raw[:limit]:
-            content = it.get("content") if isinstance(it.get("content"), dict) else it
-            title = content.get("title")
-            if not title:
-                continue
-            # 新版: provider.displayName / canonicalUrl.url / pubDate(ISO)
-            prov = content.get("provider")
-            publisher = (prov or {}).get("displayName") if isinstance(prov, dict) \
-                else content.get("publisher")
-            url = None
-            cu = content.get("canonicalUrl")
-            if isinstance(cu, dict):
-                url = cu.get("url")
-            url = url or content.get("link")
-            ts = content.get("pubDate")
-            if not ts and content.get("providerPublishTime"):
-                try:
-                    ts = dt.datetime.fromtimestamp(
-                        int(content["providerPublishTime"])).strftime("%Y-%m-%d %H:%M")
-                except Exception:
-                    ts = None
-            if isinstance(ts, str) and "T" in ts:
-                ts = ts.replace("T", " ").replace("Z", "")[:16]
-            out.append({"title": title, "publisher": publisher or "—",
-                        "time": ts or "—", "url": url or "#",
-                        "tone": _news_tone(title)})
+        for it in news_items(code)[:limit]:
+            out.append({"title": it["title"], "publisher": it.get("publisher") or "—",
+                        "time": it.get("time") or "—", "url": it.get("url") or "#",
+                        "tone": _news_tone(it["title"]), "source": it.get("source")})
     except Exception as e:
         log.debug("fetch_news %s 失败: %s", code, e)
         out = []
-    if out:
-        _cache_save(key, out)
     return out
 
 

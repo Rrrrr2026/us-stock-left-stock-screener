@@ -76,22 +76,13 @@ def fetch_benchmark():
 
 
 def news_titles(code: str) -> list:
-    import datetime as dt
+    """错杀候选「为什么跌」线索用的标题: [(日期, 标题, 链接)]。取数走 datasource.news_items —— 与档案新闻同一条多源兜底链
+    (yfinance Ticker.news → Search → Yahoo RSS → Google News RSS), 同一只票本轮只取一次。
+    2026-10-04 前这里直接 `yf.Ticker(code).news or []`: 雅虎端点 404 时全市场静默为空, 🚩 一个都不亮, 读起来像没有利空。"""
     try:
-        import yfinance as yf
-        items = yf.Ticker(code).news or []
-        out = []
-        for it in items:
-            c = it.get("content") or it
-            t = str(c.get("title") or "").strip()
-            d = str(c.get("pubDate") or c.get("displayTime") or "")[:10]
-            if not d and c.get("providerPublishTime"):
-                d = dt.datetime.utcfromtimestamp(int(c["providerPublishTime"])).date().isoformat()
-            u = ((c.get("canonicalUrl") or {}).get("url") if isinstance(c.get("canonicalUrl"), dict)
-                 else c.get("link") or "")
-            if t and d:
-                out.append((d, t, u or ""))
-        return out
+        from . import datasource as ds
+        return [(it["date"], it["title"], "" if it.get("url") in (None, "#") else it["url"])
+                for it in ds.news_items(code) if it.get("date") and it.get("title")]
     except Exception as e:
         log.debug("news %s failed: %s", code, e)
         return []

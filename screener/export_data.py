@@ -48,6 +48,33 @@ def _index_by_code(rows):
     return {r["code"]: r for r in rows}
 
 
+NEWS_MIN_RATE = 0.20      # 有标题的票占比低于这个数 = 新闻源整体不可用 (不是个别票安静)
+
+
+def news_health(profiles: dict, candidates: list) -> dict:
+    """本轮新闻源体检 —— 只看导出物本身 (看板展示什么就按什么判, 重导某个历史日期同样成立)。
+    需要新闻的票 = 有深度档案的 (档案里的 news, 流水线阶段 C 取) ∪ 错杀候选 (newsflag 导出时现取的 news)。
+      ok = False : 一条标题都没有 (总数 0), 或有标题的票占比 < NEWS_MIN_RATE
+      ok = True  : 其余
+      ok = None  : 本轮没有任何票需要新闻 (无从判断, 看板照旧显示)
+    2026-10-02..10-04 雅虎新闻端点 404 时就是「总数 0」而流水线一声不吭, 看板的「利空 0」「🚩 无」被读成没有利空。"""
+    need: dict = {}
+    for code, p in (profiles or {}).items():
+        if isinstance(p, dict) and "news" in p:
+            need[code] = len(p.get("news") or [])
+    for c in candidates or []:
+        if c.get("cuosha_score"):
+            need[c["code"]] = max(need.get(c["code"], 0), len(c.get("news") or []))
+    n = len(need)
+    with_news = sum(1 for v in need.values() if v)
+    items = sum(need.values())
+    if n == 0:
+        return {"ok": None, "n": 0, "with_news": 0, "items": 0, "rate": None}
+    rate = with_news / n
+    return {"ok": bool(items > 0 and rate >= NEWS_MIN_RATE), "n": n, "with_news": with_news,
+            "items": items, "rate": round(rate, 3)}
+
+
 def build_payload(run_date: str | None = None) -> dict:
     if run_date is None:
         run_date = db.latest_run_date()
@@ -215,6 +242,25 @@ def build_payload(run_date: str | None = None) -> dict:
     except Exception as e:
         log.warning("错杀检测失败: %s", e)
 
+    # 新闻源体检 (2026-10-04 卡 NEWS-OVERDUE; 紧跟在错杀红旗取数之后): 整轮一条标题都没有 / 有标题的票不到两成 → WARNING + meta.news_source_ok=false,
+    # 看板据此把「利空 0」「近30天无相关新闻标题」换成「新闻源不可用」; 数据总览「美股 新闻源」那一行据此判红推方糖。
+    nh = {"ok": None, "n": 0, "with_news": 0, "items": 0, "rate": None}
+    try:
+        nh = news_health(profiles, candidates)
+        try:
+            from . import datasource as _dsn
+            nh["fetch"] = _dsn.news_round_stats()       # 本进程实际问了哪几家、哪家熔断 (重导历史时可能为空)
+        except Exception:
+            pass
+        if nh["ok"] is False:
+            log.warning("新闻源不可用: 本轮 %d 只票需要新闻, 只有 %d 只取到标题 (共 %d 条) → meta.news_source_ok=false "
+                        "(看板不再显示「利空 0」; 取数统计 %s)", nh["n"], nh["with_news"], nh["items"], nh.get("fetch"))
+        else:
+            log.info("新闻源体检: %d 只票需要新闻, %d 只有标题, 共 %d 条 (%s)", nh["n"], nh["with_news"], nh["items"],
+                     nh.get("fetch"))
+    except Exception as e:
+        log.warning("新闻源体检失败 (不影响榜单与发布): %s", e)
+
     # 机会温度计: 当日榜单质量 vs 自身历史的分位 (指导"今天该不该重仓")
     opp_result = None
     try:
@@ -233,6 +279,9 @@ def build_payload(run_date: str | None = None) -> dict:
     payload = {
         "meta": {
             "run_date": run_date,
+            # 新闻源体检结果。放在 meta 最前: 数据总览只读文件头 64 KB 抠 news_source_ok (后面的 opp / disclaimer 可能很长)
+            "news_source_ok": nh["ok"],
+            "news_stats": {k: nh.get(k) for k in ("n", "with_news", "items", "rate", "fetch")},
             "data_date": runlog.get("data_date") or run_date,   # 真实行情数据日期(最新收盘)
             "updated_at": runlog.get("finished_at") or run_date,
             "n_scanned": runlog.get("n_scanned"),
