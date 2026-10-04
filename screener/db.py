@@ -70,7 +70,9 @@ CREATE TABLE IF NOT EXISTS trade_plan(
 CREATE TABLE IF NOT EXISTS run_log(
     run_date TEXT PRIMARY KEY, started_at TEXT, finished_at TEXT,
     n_scanned INTEGER, n_hit INTEGER, selected_industries TEXT,
-    status TEXT, message TEXT, data_date TEXT
+    status TEXT, message TEXT, data_date TEXT,
+    -- 2026-10-04 卡 A-HOLIDAY: 跑批当时的 market_status + 数据源留痕, 一列 JSON (看板 meta 原样带出)
+    extra_json TEXT
 );
 """
 
@@ -119,7 +121,7 @@ def _migrate(conn):
         "final_rank": [("conclusion_en", "TEXT"),
                        ("dip", "INTEGER"), ("dip_score", "REAL"), ("dip_confirm", "TEXT"),
                        ("coil", "INTEGER"), ("coil_score", "REAL"), ("coil_confirm", "TEXT")],
-        "run_log": [("data_date", "TEXT")],
+        "run_log": [("data_date", "TEXT"), ("extra_json", "TEXT")],
     }
     for table, cols in want.items():
         have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -253,12 +255,15 @@ def save_trade_plan(run_date: str, code: str, plan: dict):
 
 
 def log_run(run_date, started_at, finished_at, n_scanned, n_hit,
-            selected_industries, status, message="", data_date=None):
+            selected_industries, status, message="", data_date=None, extra=None):
+    """extra = 跑批当时才知道、导出时要原样带进 meta 的东西 (dict, 存成一列 JSON):
+    {"calendar": {last_closed_day, next_open_day, market_status}, "sources": {...}} —— 见 screener/runmeta.py。"""
     _upsert("run_log", [{
         "run_date": run_date, "started_at": started_at, "finished_at": finished_at,
         "n_scanned": n_scanned, "n_hit": n_hit,
         "selected_industries": json.dumps(selected_industries, ensure_ascii=False),
         "status": status, "message": message, "data_date": data_date or run_date,
+        "extra_json": json.dumps(extra, ensure_ascii=False) if extra else None,
     }])
 
 

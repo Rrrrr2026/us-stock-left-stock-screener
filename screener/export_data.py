@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 import os
+import re
 import csv
 import json
 import datetime as dt
@@ -276,6 +277,12 @@ def build_payload(run_date: str | None = None) -> dict:
     except Exception as e:
         log.warning("机会温度计计算失败: %s", e)
 
+    # 跑批当时写进 run_log.extra_json 的东西 (2026-10-04 卡 A-HOLIDAY): market_status + 数据源留痕。
+    # 老 run_log 没有这一列 -> 键照样写出, 值为 None, 看板走回退判断。
+    extra = _loads(runlog.get("extra_json"), default=None)
+    extra = extra if isinstance(extra, dict) else {}
+    cal = extra.get("calendar") if isinstance(extra.get("calendar"), dict) else {}
+
     payload = {
         "meta": {
             "run_date": run_date,
@@ -284,6 +291,13 @@ def build_payload(run_date: str | None = None) -> dict:
             "news_stats": {k: nh.get(k) for k in ("n", "with_news", "items", "rate", "fetch")},
             "data_date": runlog.get("data_date") or run_date,   # 真实行情数据日期(最新收盘)
             "updated_at": runlog.get("finished_at") or run_date,
+            # 与 A 股看板同名的三个交易日历键。美股没有交易日历 (不引新依赖): last_closed_day / next_open_day 恒为
+            # None, market_status 只在纽约周六日写 'weekend' —— 定义与理由见 screener/runmeta.py。
+            "last_closed_day": cal.get("last_closed_day"),
+            "next_open_day": cal.get("next_open_day"),
+            "market_status": cal.get("market_status"),
+            # 数据源留痕 (页头「数据源」标签从这里读): {bars, valuation, industry_basis, universe, benchmark}
+            "sources": extra.get("sources") if isinstance(extra.get("sources"), dict) else None,
             "n_scanned": runlog.get("n_scanned"),
             "n_hit": len(candidates),   # 与主表展示条数一致
             "selected_industries": selected_inds,
@@ -310,6 +324,47 @@ def write_dashboard_js(run_date: str | None = None) -> str:
 
 
 HISTORY_DIR = os.path.join(os.path.dirname(DASHBOARD_DATA_JS), "history")
+
+
+_DD_HEAD_RE = re.compile(r'"data_date"\s*:\s*"(\d{4}-\d{2}-\d{2})')
+
+
+def history_data_dates(history_dir: str, dates: list, prev: dict | None = None,
+                       known: dict | None = None) -> dict:
+    """history/index.json 的 `data_dates`: {跑批日 -> 那份快照的行情数据日} (2026-10-04 卡 A-HOLIDAY)。
+
+    快照文件名是**跑批日** (`day_<run_date>.json`)。美股每天早上跑的是前一个交易日的收盘, 周六 / 周日 / 周一
+    三天跑的都是周五 —— 日期选择器里按跑批日显示, 周末那两格看着像新快照。看板拿这张表把选项标成数据日
+    (跑批日不是「数据日 + 1 天」时加「跑批 MM-DD」)。
+
+    取值顺序: known (本轮刚写的那份) > prev (上一版 index.json 里已有的) > 读快照文件开头 4KB 里 meta 的
+    `data_date` (我们自己写的文件 meta 在最前面; 首次部署要补读 ~90 个文件各 4KB, 之后每轮只有新的一天)。
+    读不到就不进表 (看板按跑批日显示)。全部过 `SNAPSHOT_DATA_DATE_FIX` 修正表 (美股那张目前是空的)。
+    """
+    prev, known = prev or {}, known or {}
+    try:
+        from leftside_core.backtest import corrected_data_date     # noqa: PLC0415
+    except Exception:                                              # noqa: BLE001
+        corrected_data_date = None
+    out: dict = {}
+    for d in dates:
+        v = known.get(d) or prev.get(d)
+        if not v:
+            try:
+                with open(os.path.join(history_dir, f"day_{d}.json"), encoding="utf-8") as f:
+                    m = _DD_HEAD_RE.search(f.read(4096))
+                v = m.group(1) if m else None
+            except Exception:                                      # noqa: BLE001
+                v = None
+        v = str(v)[:10] if v else None
+        if v and corrected_data_date is not None:
+            try:
+                v = corrected_data_date(f"day_{d}.json", v)[0] or v
+            except Exception:                                      # noqa: BLE001
+                pass
+        if v and len(v) == 10 and v <= d:                          # 数据日不可能晚于跑批日; 晚了 = 文件被动过, 不采信
+            out[d] = v
+    return out
 
 
 def write_history_snapshot(run_date: str | None = None) -> str | None:
@@ -339,15 +394,24 @@ def write_history_snapshot(run_date: str | None = None) -> str | None:
     dates = dates[:keep]
     idx_path = os.path.join(HISTORY_DIR, "index.json")
     hits: dict = {}
+    prev_dd: dict = {}
     try:
         with open(idx_path, encoding="utf-8") as f:
-            hits = json.load(f).get("hits") or {}
+            _idx = json.load(f)
+        hits = _idx.get("hits") or {}
+        prev_dd = _idx.get("data_dates") or {}
     except Exception:
-        hits = {}
+        hits, prev_dd = {}, {}
     hits[rd] = len(payload["candidates"])
     hits = {d: hits[d] for d in dates if d in hits}
+    try:
+        data_dates = history_data_dates(HISTORY_DIR, dates, prev=prev_dd,
+                                        known={rd: payload["meta"].get("data_date")})
+    except Exception as e:                                     # noqa: BLE001
+        log.warning("历史快照清单: data_dates 没算出来, 沿用上一版 (缺的那几天看板按跑批日显示): %s", e)
+        data_dates = {d: prev_dd[d] for d in dates if d in prev_dd}
     with open(idx_path, "w", encoding="utf-8") as f:
-        json.dump({"dates": dates, "hits": hits}, f)
+        json.dump({"dates": dates, "hits": hits, "data_dates": data_dates}, f)
     log.info("历史快照已写出: %s (%d 天可回看)", path, len(dates))
     return path
 

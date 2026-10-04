@@ -31,6 +31,7 @@ from screener import module4_crossscore as m4
 from screener import module6_profile as m6
 from screener import tradeplan as tp
 from screener import export_data as ex
+from screener import runmeta
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -479,9 +480,12 @@ def run(use_cache=True):
         log.info("深度档案重试后: 全空 %d, 有年度营收 %d/%d", n_empty_after,
                  sum(1 for p in _profiles.values() if _rev_ok(p)), len(prof_targets))
 
+    # market_status (美股无日历, 只判周末) + 数据源留痕 -> run_log.extra_json -> 看板 meta (2026-10-04 卡 A-HOLIDAY)。
+    # 两个函数都不抛; 看板据此 + 跑批新鲜度分清「休市」与「没跑」, 周一休市的周三凌晨不再误报「定时任务可能失败」。
+    run_extra = {"calendar": runmeta.calendar_fields(), "sources": runmeta.run_sources(len(universe))}
     finished = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     db.log_run(run_date, started, finished, n_scanned, len(final_records), selected, "ok",
-               data_date=data_date)
+               data_date=data_date, extra=run_extra)
     log.info("扫描完成: 扫描 %d, 命中 %d", n_scanned, len(final_records))
     ex.write_dashboard_js(run_date)
     ex.write_csv(run_date)
