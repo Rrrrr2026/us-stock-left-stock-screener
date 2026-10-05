@@ -183,6 +183,18 @@
   @media (max-width: 960px){ #sideNav{ display:none; } body:not(.navClosed){ padding-left:0; } #navToggle{ display:none; } }
   #ovMini{ color:var(--muted); font-weight:400; white-space:nowrap; }
   #ovMini b{ color:var(--dim); font-weight:600; }
+  #ovMini .ovShort{ display:none; }
+  /* ===== 数据新鲜度提示条 #staleBanner (2026-10-04 卡 A-HOLIDAY) =====
+     data-level="alert": 红条, 跑批 / 数据真的落后 (沿用原来的玫红样式);
+     data-level="info" : 中性条, 休市 / 等收盘后跑批 —— 刻意不用红也不用琥珀: 休市不是故障。判据见脚本里的 FV-FRESH 块。 */
+  #staleBanner[data-level="none"]{ display:none; }   /* 不靠 Tailwind 的 .hidden: CDN 没加载时也不留一个空框 */
+  #staleBanner[data-level="info"]{ border-color:var(--border)!important; background:var(--card)!important;
+    color:var(--dim)!important; padding-top:6px; padding-bottom:6px; margin-bottom:8px; font-size:12.5px; }
+  #staleBanner[data-level="info"] b{ color:var(--text); font-weight:600; }
+  #staleBanner a{ color:inherit; text-decoration:underline; text-underline-offset:2px; }
+  #staleBanner .sep{ opacity:.5; margin:0 2px 0 6px; }
+  #staleBanner .seg{ white-space:nowrap; }
+  .fvRunNote{ font-size:.88em; opacity:.72; white-space:nowrap; }
   .merged-into-deck{ border:0!important; padding:0!important; margin:0 0 8px!important; box-shadow:none!important;
     background:transparent!important; animation:none!important; }
   .merged-into-deck::before{ display:none!important; }
@@ -336,11 +348,16 @@
     #refreshBtn{ order:1; width:44px; height:44px; padding:0; font-size:0; border:0;
       background:transparent; color:var(--dim); flex:none; }
     #refreshBtn::before{ content:"↻"; font-size:20px; line-height:44px; }
-    .hdr-row2{ min-height:26px; margin-top:0!important; }
+    .hdr-row2{ min-height:26px; margin-top:0!important; flex-wrap:nowrap!important; }
+    .hdr-row2 > div:first-child{ flex:1 1 auto; min-width:0; flex-wrap:nowrap!important; overflow:hidden; }
     #hdrMeta{ display:none; }
-    #ovMini{ overflow:hidden; text-overflow:ellipsis; }
+    /* 手机首屏并排「数据日 MM-DD · 跑批 MM-DD HH:MM」: 桌面那份「最后更新」在 #hdrMeta 里, 手机上是隐藏的。
+       第二行不许折行 (页头高度 75px 是锚点余量 80 的依据): 文字放不下走省略号, 日期框限宽。 */
+    #ovMini{ display:block; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+    #ovMini .ovFull{ display:none; }
+    #ovMini .ovShort{ display:inline; }
     body.hasDates .hdr-row2 #dateSel{ display:inline-block; height:26px; padding:2px 6px;
-      font-size:11.5px; flex:none; }
+      font-size:11.5px; flex:none; max-width:124px; }
     #searchCard input{ height:40px; font-size:16px; }
     /* 作战台三格在窄屏折成两列: 第二行首格也要去掉左框线 */
     .deckGrid{ grid-template-columns:1fr 1fr; gap:8px 0; }
@@ -437,7 +454,7 @@
     </div>
     <div class="hdr-row2 flex items-center justify-between flex-wrap gap-x-4 gap-y-0.5 mt-1 text-xs text-slate-400">
       <div class="flex items-center gap-x-3 flex-wrap"><span id="ovMini"></span><span class="hidden 2xl:inline" data-i18n="subtitle">全美股(市值≥$1亿) · 高景气板块内 · 回踩支撑/接近前低的左侧机会 · 技术 × 基本面交叉打分</span></div>
-      <div id="hdrMeta" class="flex items-center gap-x-3 flex-wrap"><span><span data-i18n="updated">最后更新：</span><span id="updatedAt" class="text-slate-200">—</span></span><span data-i18n="datasource">数据源：Yahoo Finance（全美股 · GICS 板块）· 价格单位 USD</span></div>
+      <div id="hdrMeta" class="flex items-center gap-x-3 flex-wrap"><span><span data-i18n="updated">最后更新：</span><span id="updatedAt" class="text-slate-200">—</span></span><span id="dsrcLabel"></span></div>
     </div>
   </header>
 
@@ -450,7 +467,7 @@
 
   <!-- 历史快照提示条 -->
   <div id="histBanner" class="hidden card border-sky-500/40 bg-sky-500/5 px-4 py-2 mb-4 text-[13px] leading-relaxed text-sky-200/90"></div>
-  <div id="staleBanner" class="hidden card border-rose-500/50 bg-rose-500/10 px-4 py-2 mb-4 text-[13px] leading-relaxed text-rose-200"></div>
+  <div id="staleBanner" role="status" data-level="none" class="hidden card border-rose-500/50 bg-rose-500/10 px-4 py-2 mb-4 text-[13px] leading-relaxed text-rose-200"></div>
 
   <!-- 概览卡 -->
   <!-- 🔍 全局搜索 -->
@@ -982,7 +999,13 @@
       // 财报日 / 状态 / 榜单战绩 / 过期提示
       earn_in:"📅 财报 ", earn_days_u:" 天后", earn_tip:"财报披露日临近：左侧建仓请等财报落地再动手",
       earn_warn_a:"⚠️ 财报前不建仓 —— ", earn_warn_b:" 天后披露财报（", earn_warn_c:"）。一份差财报会把左侧剧本直接打穿；建议等财报落地、支撑重新确认后再按计划执行。",
-      stale_a:"⚠️ 数据已 ", stale_b:" 天未更新（最近数据日 ", stale_c:"）—— 定时任务可能失败，请检查 data/update.log",
+      // 数据新鲜度提示条 / 日期显示 (卡 A-HOLIDAY): 红条只在跑批或数据真的落后时亮, 休市是中性条
+      fr_mkt:"美股", fr_holiday:"休市中", fr_weekend:"周末休市", fr_nonew:"休市中 / 无新交易日", fr_next:"下一交易日 ",
+      fr_cur_a:"当前为 ", fr_cur_b:" 收盘", fr_run:"最近一次跑批 ", fr_await_a:"开市", fr_await_b:"新数据待收盘后跑批更新",
+      fr_stale_a:"最近一次跑批 ", fr_stale_b:"，距今 ", fr_stale_c:" 天 —— 定时任务可能失败，", fr_behind:"数据落后于应到交易日 ",
+      fr_check:"请查看 /data/ 数据总览", fr_po:"（", fr_pc:"）", fr_dash:" —— ", fr_wk:"周日,周一,周二,周三,周四,周五,周六",
+      ov_date_s:"数据日", ov_run_s:"跑批", run_note:"跑批 ", ql_quarterly:"成分随季报更新",
+      ds_label:"数据源：", ds_bars:" 日线", ds_uni:"股票池 ", ds_ind:"行业 ", ds_val:"估值 ", ds_unit:"价格单位 USD",
       bt_reg_bull:"📈 指数强势日", bt_reg_bear:"📉 指数弱势日",
       pick_bt_h:"榜单战绩（次日开盘买入，含未满窗样本计数）：", pick_bt_n:" 次入选", pick_bt_r10:"10日 ", pick_bt_r30:"30日 ", pick_bt_r60:"60日 ",
       pick_bt_hit:"30日内+20% ", pick_bt_beat:"30日跑赢指数 ", pick_bt_wait:"窗口未满，积累中",
@@ -1229,7 +1252,13 @@
       // earnings / regime / board record / stale
       earn_in:"📅 earnings in ", earn_days_u:"d", earn_tip:"Earnings report imminent: wait for it before any left-side entry",
       earn_warn_a:"⚠️ No entry before earnings — report in ", earn_warn_b:" days (", earn_warn_c:"). One bad report guts a left-side setup; wait for the print and a re-confirmed support before executing the plan.",
-      stale_a:"⚠️ Data is ", stale_b:" days old (last data date ", stale_c:") — the scheduled run may have failed; check data/update.log",
+      // data freshness banner / date labels (card A-HOLIDAY)
+      fr_mkt:"US market", fr_holiday:" closed", fr_weekend:" closed for the weekend", fr_nonew:" closed / no new trading day", fr_next:"next session ",
+      fr_cur_a:"showing ", fr_cur_b:" close", fr_run:"last batch run ", fr_await_a:" session open", fr_await_b:"new data after the post-close batch run",
+      fr_stale_a:"Last batch run ", fr_stale_b:" was ", fr_stale_c:" days ago — the scheduled job may have failed; ", fr_behind:"Data is behind the expected trading day ",
+      fr_check:"see the /data/ overview", fr_po:" (", fr_pc:")", fr_dash:" — ", fr_wk:"Sun,Mon,Tue,Wed,Thu,Fri,Sat",
+      ov_date_s:"Data", ov_run_s:"run", run_note:"run ", ql_quarterly:"constituents change with quarterly filings",
+      ds_label:"Source: ", ds_bars:" daily bars", ds_uni:"universe ", ds_ind:"industries ", ds_val:"valuation ", ds_unit:"prices in USD",
       bt_reg_bull:"📈 Index above 50d", bt_reg_bear:"📉 Index below 50d",
       pick_bt_h:"Board record (buy next open; counts include unfinished windows):", pick_bt_n:" picks", pick_bt_r10:"10d ", pick_bt_r30:"30d ", pick_bt_r60:"60d ",
       pick_bt_hit:"+20% within 30d ", pick_bt_beat:"beat index 30d ", pick_bt_wait:"windows not complete yet",
@@ -1398,6 +1427,7 @@
   }
   function applyLang(){
     applyStaticI18n();
+    try{ relabelDates(); }catch(e){}
     syncWeightUI(); syncAdvUI(); renderIndustryChart(); render(); updateStrip(); renderOverview();
     if(curC && !$("#drawer").classList.contains("translate-x-full")) openDetail(curC, true);
   }
@@ -1496,6 +1526,204 @@
     return l? {axis:"#64748b",grid:"#e2e8f0",label:"#334155",base:"#93b0d6"}
             : {axis:"#7e93b8",grid:"#1b2640",label:"#cbd5e1",base:"#3b5a8a"}; }
 
+  // ===== FV-FRESH BEGIN =====
+  // 数据新鲜度判定 + 历史日期标签: 两市看板 (a-share / us 两仓 dashboard/index.html) **逐字相同**的纯函数块。
+  // 改这里必须同时: ① 把整块同步到另一仓 ② 更新两仓 tests/test_fresh_banner.py 的 FRESH_SHA256
+  // ③ 同步 tests 里的 Python 镜像 py_freshness / py_run_label (同一张用例表两边各跑一遍)。2026-10-04 卡 A-HOLIDAY。
+  //
+  // 为什么要有它: 旧逻辑是 age = floor((浏览器现在 − data_date 当地零点) / 1 天) > 4 就亮红条「定时任务可能失败」,
+  // 按自然日、不认交易日历, 还吃浏览器时区 —— A 股国庆休市 (10-01..10-07) 流水线每个工作日照跑、data_date 停在
+  // 09-30, 红条会从 10-05 00:00 一直误亮到 10-08 中午; 美股周一休市的周三凌晨同样误亮。
+  //
+  // freshness(meta, nowMs, cfg) -> {level, code, why, mode, dataDate, runDay, runAt, ageDays, lastClosed, nextOpen, expectDay}
+  //   level  "alert" 红条 (跑批/数据真的落后) | "info" 中性条 (休市 / 等收盘后跑批) | "none" 不显示
+  //   code   run_stale | data_behind | data_overdue | closed | await | ok | no_meta ;  why (closed): holiday | weekend | no_new_day
+  //   cfg    {tzRun 跑批时间串的时区, tzMkt 交易所时区, staleRunDays 跑批几个自然日不动算失败, lagDays 交易日 D 的数据在 D+lagDays 那天跑批}
+  // 判据 (按顺序, 命中即返回):
+  //   ① 跑批本身不新鲜: 今天 (tzRun) − 最近一次跑批日 > staleRunDays -> run_stale。跑批日取 meta.updated_at 的前 10 位
+  //      (服务器按 tzRun 写的墙钟串, **不经 new Date() 解析**, 所以与浏览器时区无关), 缺则 run_date。
+  //   ② 有交易日历字段 (流水线写 last_closed_day / next_open_day; 只写日历精确值, 取不到是 null) -> mode "calendar":
+  //        data_date < last_closed_day                                   -> data_behind  (跑批当时数据就没追上应到交易日)
+  //        今天 (tzRun) 已过 next_open_day + lagDays 而 data_date 还没到它 -> data_overdue (该到的交易日没到)
+  //        last_closed_day < 今天 (tzMkt) < next_open_day                -> closed: 这段里有工作日 = holiday, 只有周六日 = weekend
+  //        今天 (tzMkt) >= next_open_day、数据还停在更早且隔了不止 1 个自然日 -> await (休市结束, 等当日收盘后跑批)
+  //        next_open_day 是 null (日历没填到那么远) 时只剩时钟能判的周末
+  //   ③ 没有日历字段 (老数据 / 美股无日历) -> mode "fallback":
+  //        data_date 落后于「跑批那天应到的工作日」(跑批日 − lagDays, 落在周末就退到周五) -> closed / no_new_day
+  //        今天 (tzMkt) 是周六日                                           -> closed / weekend
+  // 所有「今天」都用 Intl 按指定时区取日历日, 日期差按 UTC 午夜算 —— 北京/柏林/纽约的浏览器对同一时刻给同一结论。
+  const FVF = (function(){
+    const DAY = 86400000;
+    const FIX_OFF = {"Europe/Berlin":60, "Asia/Shanghai":480, "America/New_York":-300};   // Intl 不认时区时的兜底 (标准时, 分钟)
+    function ymd(s){ return (typeof s==="string" && /^\d{4}-\d{2}-\d{2}/.test(s)) ? s.slice(0,10) : null; }
+    function dayNum(d){ return Math.round(Date.UTC(+d.slice(0,4), +d.slice(5,7)-1, +d.slice(8,10))/DAY); }
+    function dayDiff(a, b){ return dayNum(a)-dayNum(b); }
+    function addDays(d, n){ return new Date((dayNum(d)+n)*DAY).toISOString().slice(0,10); }
+    function dow(d){ return new Date(dayNum(d)*DAY).getUTCDay(); }                        // 0 = 周日 .. 6 = 周六
+    function isWeekend(d){ const w=dow(d); return w===0 || w===6; }
+    function ymdInTz(ms, tz){
+      try{
+        const o={};
+        new Intl.DateTimeFormat("en-CA", {timeZone:tz, year:"numeric", month:"2-digit", day:"2-digit"})
+          .formatToParts(new Date(ms)).forEach(function(p){ o[p.type]=p.value; });
+        if(o.year && o.month && o.day) return o.year+"-"+o.month+"-"+o.day;
+      }catch(e){}
+      return new Date(ms+(FIX_OFF[tz]||0)*60000).toISOString().slice(0,10);
+    }
+    function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+    function freshness(meta, nowMs, cfg){
+      meta = meta||{}; cfg = cfg||{};
+      const tzRun = cfg.tzRun||"Europe/Berlin", tzMkt = cfg.tzMkt||tzRun;
+      const staleRunDays = (typeof cfg.staleRunDays==="number") ? cfg.staleRunDays : 3;
+      const lag = (typeof cfg.lagDays==="number") ? cfg.lagDays : 0;
+      const ua = (typeof meta.updated_at==="string") ? meta.updated_at : "";
+      const dataDate = ymd(meta.data_date) || ymd(meta.run_date);
+      const runDay = ymd(ua) || ymd(meta.run_date);
+      const out = {level:"none", code:"ok", why:null, mode:"fallback", dataDate:dataDate, runDay:runDay,
+        runAt: runDay ? ((ymd(ua) && ua.length>=16) ? ua.slice(5,16) : runDay.slice(5)) : null,
+        ageDays:null, lastClosed:null, nextOpen:null, expectDay:null};
+      if(!dataDate || !runDay){ out.code="no_meta"; return out; }
+      const set = function(level, code, why){ out.level=level; out.code=code; out.why=why||null; return out; };
+      const todayRun = ymdInTz(nowMs, tzRun), todayMkt = ymdInTz(nowMs, tzMkt);
+      out.ageDays = dayDiff(todayRun, runDay);
+      if(out.ageDays > staleRunDays) return set("alert", "run_stale");
+      const lc = ymd(meta.last_closed_day), no = ymd(meta.next_open_day);
+      if(lc){
+        out.mode="calendar"; out.lastClosed=lc; out.nextOpen=(no && no>lc) ? no : null;
+        if(dataDate < lc){ out.expectDay=lc; return set("alert", "data_behind"); }
+        if(out.nextOpen){
+          if(dataDate < no && dayDiff(todayRun, no) > lag){ out.expectDay=no; return set("alert", "data_overdue"); }
+          if(todayMkt > lc && todayMkt < no){
+            let hol=false;
+            for(let d=addDays(lc,1); d<no; d=addDays(d,1)){ if(!isWeekend(d)){ hol=true; break; } }
+            return set("info", "closed", hol ? "holiday" : "weekend");
+          }
+          if(todayMkt >= no && dataDate < no && dayDiff(no, dataDate) > 1) return set("info", "await");
+          return out;
+        }
+        if(todayMkt > lc && isWeekend(todayMkt)) return set("info", "closed", "weekend");
+        return out;
+      }
+      let expect = addDays(runDay, -lag);
+      while(isWeekend(expect)) expect = addDays(expect, -1);
+      if(dataDate < expect) return set("info", "closed", "no_new_day");
+      if(isWeekend(todayMkt)) return set("info", "closed", "weekend");
+      return out;
+    }
+    // 历史快照「跑批日 -> 显示用的数据日」: 文件名 day_<跑批日>.json, 休市日 / 周末流水线照跑, 跑批日看着像新快照。
+    //   map = history/index.json 的 data_dates (流水线写; 老清单没有); live = 最新一份 meta; lagDays 同上。
+    //   -> {data, note}: data = 要显示的日期 (取不到数据日 = 跑批日本身); note = 跑批日 ≠ 数据日 + lagDays 时的 "MM-DD", 否则 ""。
+    // 没有 map 时只对 lagDays = 0 的市场做一条**精确**推断: 跑批日落在 (live.data_date, live.run_date] 里的快照, 数据日只能是
+    // live.data_date (数据日随跑批日单调不减, 且就绪闸门保证每轮都追到最后收盘日)。其余一律按跑批日显示, 不猜。
+    function runLabel(runDate, map, live, lagDays){
+      const rd = ymd(runDate);
+      if(!rd) return {data:String(runDate==null?"":runDate), note:""};
+      const lag = (typeof lagDays==="number") ? lagDays : 0;
+      const hasMap = !!(map && typeof map==="object" && Object.keys(map).length);
+      let dd = hasMap ? ymd(map[rd]) : null;
+      if(!hasMap && lag===0 && live){
+        const ld = ymd(live.data_date), lr = ymd(live.run_date);
+        if(ld && lr && rd > ld && rd <= lr) dd = ld;
+      }
+      if(!dd || dd > rd) return {data:rd, note:""};
+      return {data:dd, note:(rd === addDays(dd, lag)) ? "" : rd.slice(5)};
+    }
+    return {freshness:freshness, runLabel:runLabel, ymdInTz:ymdInTz, dayDiff:dayDiff, addDays:addDays, dow:dow, isWeekend:isWeekend, esc:esc};
+  })();
+  // ===== FV-FRESH END =====
+  // ---------- 数据新鲜度提示条 / 数据源标签 / 日期显示统一数据日 (2026-10-04 卡 A-HOLIDAY) ----------
+  // 本页参数: 跑批时间串是服务器 Europe/Berlin 的墙钟; 美股次日早上跑批 (lagDays 1: 交易日 D 的收盘在 D+1 柏林早上出数), 每天跑。
+  const FRESH_CFG = {tzRun:"Europe/Berlin", tzMkt:"America/New_York", staleRunDays:3, lagDays:1};
+  let HIST_DD = null;                     // history/index.json 的 data_dates {跑批日: 数据日}; 老清单没有 = null
+  let HIST_DATES = null, HIST_CUR = null; // 日期选择器当前的选项 (跑批日, 新 -> 旧) 与最新一天
+  // LIVE_DATA 在后面才 let: 首次 renderOverview() 时它还在暂时性死区, 所以用 try 兜住
+  function liveMeta(){ try{ return (LIVE_DATA && LIVE_DATA.meta) || {}; }catch(e){ return (DATA && DATA.meta) || {}; } }
+  function viewingHistory(){ try{ return !!LIVE_DATA && DATA !== LIVE_DATA; }catch(e){ return false; } }
+  function fvDay(d){ if(!d) return ""; const w = t("fr_wk").split(",")[FVF.dow(d)] || "";
+    return d.slice(5) + t("fr_po") + w + t("fr_pc"); }
+  function freshHTML(r){
+    const e = FVF.esc;
+    const cur = t("fr_cur_a")+"<b>"+e(r.dataDate)+"</b>"+t("fr_cur_b");
+    const run = t("fr_run")+e(r.runAt||dash);
+    const link = '<a href="https://fairvalpha.com/data/" target="_blank" rel="noopener">'+t("fr_check")+"</a>";
+    if(r.code==="run_stale")
+      return "⚠️ "+t("fr_stale_a")+"<b>"+e(r.runAt||dash)+"</b>"+t("fr_stale_b")+r.ageDays+t("fr_stale_c")+link+t("fr_po")+cur+t("fr_pc");
+    if(r.code==="data_behind" || r.code==="data_overdue")
+      return "⚠️ "+t("fr_behind")+"<b>"+e(r.expectDay)+"</b>"+t("fr_po")+cur+" · "+run+t("fr_pc")+t("fr_dash")+link;
+    const segs = [];                                               // 中性条: 每段不折行, 窄屏在段与段之间换行
+    if(r.code==="await"){
+      segs.push("⏳ "+t("fr_mkt")+" <b>"+e(fvDay(r.nextOpen))+"</b>"+t("fr_await_a"), t("fr_await_b"));
+    }else{
+      segs.push("⏸️ "+t("fr_mkt")+t(r.why==="weekend" ? "fr_weekend" : (r.why==="no_new_day" ? "fr_nonew" : "fr_holiday")));
+      if(r.nextOpen) segs.push(t("fr_next")+"<b>"+e(fvDay(r.nextOpen))+"</b>");
+    }
+    segs.push(cur, run);
+    // 分隔点跟在前一段末尾, 段与段之间留一个真空格 = 唯一的换行点 (相邻行内元素之间没有空白就没有换行机会, 英文会撑破窄屏)
+    return segs.map((x,i)=>'<span class="seg">'+x+(i<segs.length-1 ? '<span class="sep">·</span>' : "")+"</span>").join(" ");
+  }
+  function renderFresh(){
+    const sb = $("#staleBanner"); if(!sb) return;
+    const r = FVF.freshness(liveMeta(), Date.now(), FRESH_CFG);   // 永远按最新一份数据判, 不按正在回看的那天
+    sb.dataset.code = r.code + (r.why ? ":"+r.why : "");
+    sb.dataset.mode = r.mode;
+    if(r.level==="none" || viewingHistory()){                     // 回看历史快照时由 #histBanner 说明, 不叠第二条
+      sb.dataset.level = "none"; sb.classList.add("hidden"); return; }
+    sb.dataset.level = r.level;
+    sb.innerHTML = freshHTML(r);
+    sb.classList.remove("hidden");
+  }
+  // 页头「数据源」: 从 meta 读实情, 不写死。优先 meta.sources (流水线留痕); 老数据没有它时 A 股按已有的口径键
+  // (scan_basis = store_universe* 即阶段A 直读 Tushare 价格库; industry_basis) 与优质榜 meta 的来源留痕拼; 都没有才用静态文案。
+  const SRC_ZH = {tushare:"Tushare", tushare_daily_basic:"Tushare", tushare_stock_basic:"Tushare", "东财直连":"东财", "东财(akshare)":"东财",
+    yfinance:"Yahoo Finance", nasdaq_screener:"NASDAQ 筛选器", sp500:"标普500 成分"};
+  const SRC_EN = {"东财":"Eastmoney", "东财直连":"Eastmoney", "东财(akshare)":"Eastmoney", "新浪":"Sina", "缺失":"missing",
+    nasdaq_screener:"NASDAQ screener", sp500:"S&P 500 constituents"};
+  function dsrcText(){
+    const m = liveMeta(), s = (m.sources && typeof m.sources==="object") ? m.sources : {};
+    const q = (window.__QL__ && window.__QL__.meta) || {};
+    const nm = v => (v==null || v==="") ? null : ((LANG==="en" && SRC_EN[v]) || SRC_ZH[v] || String(v));
+    const bars = nm(s.bars) || (String(m.scan_basis||"").indexOf("store_universe")===0 ? "Tushare" : null);
+    const ib = s.industry_basis || m.industry_basis;
+    const ind = [ib==="em_f100" ? nm("东财") : (ib ? String(ib) : null), nm(s.industry || q.industry_source)]
+      .filter((x,i,a)=> x && a.indexOf(x)===i);
+    const val = nm(s.valuation || q.valuation_source);
+    const parts = [];
+    if(bars) parts.push(bars + t("ds_bars"));
+    if(s.universe) parts.push(t("ds_uni") + nm(s.universe));
+    if(ind.length) parts.push(t("ds_ind") + ind.join("/"));
+    if(val) parts.push(t("ds_val") + val);
+    return parts.length ? (t("ds_label") + parts.join(" · ") + " · " + t("ds_unit")) : t("datasource");
+  }
+  // 日期显示统一数据日: 选项的值仍是跑批日 (= 快照文件名), 显示数据日; 跑批日 ≠ 数据日 + lagDays 时加「跑批 MM-DD」
+  function runLabelText(d){ const L = FVF.runLabel(d, HIST_DD, liveMeta(), FRESH_CFG.lagDays);
+    return L.note ? (L.data + t("fr_po") + t("run_note") + L.note + t("fr_pc")) : L.data; }
+  function dateOptionsHTML(){ return (HIST_DATES||[]).map(d=>`<option value="${FVF.esc(d)}">${d===HIST_CUR?"📅 ":""}${FVF.esc(runLabelText(d))}</option>`).join(""); }
+  function relabelDates(){ const sel=$("#dateSel"); if(!sel || !HIST_DATES) return;
+    const v=sel.value; sel.innerHTML = dateOptionsHTML(); sel.value = v; try{ if(dsSync) dsSync(); }catch(e){} }
+  // 优质榜 / 信号回测标题里的日期由共用脚本 leftside_shared.js 按「跑批日」写出 (优质榜 meta.date / 回测 last_day);
+  // 这里统一换成数据日, 跑批日不同则加小字。用 MutationObserver 而不是包一层 LS.renderX: 共用脚本内部的重渲染
+  // (排序 / 分段按钮) 直接调闭包函数, 包装拦不到。改写后带 .fvDataDate 标记, 共用脚本下次 textContent 重写即自动重做。
+  const RUN_DATE_SPOTS = [["#qlMeta", "ql_quarterly"], ["#btMeta", null]];
+  function fixRunDate(el, tailKey, force){
+    if(!el) return;
+    const done = !!el.querySelector(".fvDataDate");
+    if(done && !force) return;
+    const raw = done ? (el.dataset.fvRaw || "") : (el.textContent || "");
+    const m = raw.match(/^([\s\S]*)(\d{4}-\d{2}-\d{2})([\s\S]*)$/);   // 贪婪前缀 -> 取最后一个日期
+    if(!m) return;
+    const L = FVF.runLabel(m[2], HIST_DD, liveMeta(), FRESH_CFG.lagDays), e = FVF.esc;
+    el.dataset.fvRaw = raw;
+    el.innerHTML = e(m[1]) + '<span class="fvDataDate" data-run="'+e(m[2])+'">'+e(L.data)+"</span>" +
+      (L.note ? ' <span class="fvRunNote">('+e(t("run_note")+L.note)+")</span>" : "") + e(m[3]) +
+      (tailKey ? ' <span class="fvRunNote">· '+e(t(tailKey))+"</span>" : "");
+  }
+  function refreshRunDates(){ RUN_DATE_SPOTS.forEach(x=>{ try{ fixRunDate($(x[0]), x[1], true); }catch(e){} }); }
+  function watchRunDates(){
+    RUN_DATE_SPOTS.forEach(x=>{ const el=$(x[0]); if(!el || typeof MutationObserver==="undefined") return;
+      fixRunDate(el, x[1]);
+      new MutationObserver(()=>{ try{ fixRunDate(el, x[1]); }catch(e){} }).observe(el, {childList:true, characterData:true, subtree:true}); });
+  }
+
   // ---------- 概览 ----------
   function renderOverview(){
     const meta = DATA.meta||{};
@@ -1506,11 +1734,8 @@
     $("#ovInds").textContent = (meta.selected_industries||[]).length || dash;
     $("#ovDate").textContent = meta.data_date || meta.run_date || dash;
     renderOpp(meta.opp);
-    try{
-      const sb=$("#staleBanner"); const dd=meta.data_date||meta.run_date;
-      if(sb&&dd){ const age=Math.floor((Date.now()-new Date(dd+"T00:00:00").getTime())/86400000);
-        if(age>4){ sb.classList.remove("hidden"); sb.textContent=`${t("stale_a")}${age}${t("stale_b")}${dd}${t("stale_c")}`; } else sb.classList.add("hidden"); }
-    }catch(e){}
+    try{ renderFresh(); }catch(e){}          // 休市 / 跑批新鲜度提示条 (判据见上面 FV-FRESH 块; 旧版是 data_date 自然日 >4 天亮红条)
+    try{ const dl=$("#dsrcLabel"); if(dl) dl.textContent = dsrcText(); }catch(e){}
     setTimeout(()=>{ if(window.LS&&LS.ready) LS.renderBacktest(); }, 0);
     setTimeout(()=>{ if(window.renderSentiment) renderSentiment(); }, 0);   // 延后一拍: 首次调用时表格区的工具函数(const)尚未初始化
     setTimeout(()=>{ if(window.LS&&LS.ready) LS.renderCuosha(); }, 0);
@@ -2627,10 +2852,14 @@
       VIEW_DATE = cur;
       const dates = hist.slice();
       if(cur && dates.indexOf(cur)<0) dates.unshift(cur);
+      // 选项的值仍是跑批日 (快照文件名 day_<跑批日>.json), 显示的是数据日 —— 休市日 / 周末重跑的那几格不再冒充新快照
+      HIST_DD = (j.data_dates && typeof j.data_dates==="object") ? j.data_dates : null;
+      HIST_DATES = dates; HIST_CUR = cur;
       const sel=$("#dateSel");
-      sel.innerHTML = dates.map(d=>`<option value="${escH(d)}">${d===cur?"📅 "+escH(d):escH(d)}</option>`).join("");
+      sel.innerHTML = dateOptionsHTML();
       sel.value = cur || dates[0];
       buildScrub(dates, cur || dates[0], (j.hits||{}));
+      refreshRunDates();
     }catch(e){}   // file:// 或无 history 目录: 保持隐藏
   }
   $("#dateSel").onchange = async e=>{
@@ -2645,7 +2874,7 @@
       j.details={}; j.profiles={};       // 历史快照不带K线/档案 (瘦身)
       applyData(j);
       VIEW_DATE=d;
-      bn.textContent = "📅 "+t("hist_banner_a")+d+t("hist_banner_b");
+      bn.textContent = "📅 "+t("hist_banner_a")+runLabelText(d)+t("hist_banner_b");
       bn.classList.remove("hidden");
     }catch(err){
       if(seq===histSeq && VIEW_DATE) e.target.value=VIEW_DATE; setTimeout(()=>{ dsSync&&dsSync(); },0);   // 回到"实际在看"的日期
@@ -2812,12 +3041,12 @@
       sx=Math.min(0, Math.max(Math.min(0,w-sw), sx)); bars.style.transform=`translateX(${sx}px)`; };
     dsSync=()=>{ const v=sel.value;
       bs.forEach(b=>b.classList.toggle("on", b.dataset.d===v));
-      lab.textContent=v||"—";
+      lab.textContent=v?runLabelText(v):"—";
       const onb=bs.find(b=>b.classList.contains("on"));
       if(onb){ const w=track.clientWidth, bx=onb.offsetLeft;
         if(bx+sx<8 || bx+sx>w-8){ sx=-(bx-w/2); clamp(); } } };
     bs.forEach(b=>{
-      b.onmouseenter=()=>{ lab.textContent=b.dataset.d; };
+      b.onmouseenter=()=>{ lab.textContent=runLabelText(b.dataset.d); };
       b.onclick=()=>{ if(sel.value===b.dataset.d) return;
         sel.value=b.dataset.d; sel.dispatchEvent(new Event("change")); dsSync(); };
     });
@@ -2825,7 +3054,7 @@
       vel = x<30? 4 : (x>r.width-30? -4 : 0);
       if(vel&&!timer) timer=setInterval(()=>{ sx+=vel; clamp(); },16);
       if(!vel&&timer){ clearInterval(timer); timer=null; } };
-    track.onmouseleave=()=>{ if(timer){ clearInterval(timer); timer=null; } lab.textContent=sel.value||"—"; };
+    track.onmouseleave=()=>{ if(timer){ clearInterval(timer); timer=null; } lab.textContent=sel.value?runLabelText(sel.value):"—"; };
     if(!sel.dataset.dsBound){ sel.dataset.dsBound="1";
       sel.addEventListener("change", ()=>setTimeout(()=>{ dsSync&&dsSync(); },0)); }
     wrap.classList.remove("hidden");
@@ -3261,8 +3490,13 @@
         localStorage.setItem("navClosed", document.body.classList.contains("navClosed")?"1":"0"); applyNav(); };
       window.addEventListener("resize", applyNav); applyNav(); }
     // 迷你统计 (原横条隐藏)
+    // 桌面: 「数据日期 YYYY-MM-DD」(最近跑批时间在同一行右端的 #hdrMeta); 手机: #hdrMeta 是隐藏的, 这里并排给
+    // 「数据日 MM-DD · 跑批 MM-DD HH:MM」(两个 span 由 CSS 按断点切换)。2026-09-07 老板: 扫描数/命中数下线
     function ovMini(){ const el=document.getElementById("ovMini"); if(!el||!DATA||!DATA.meta) return;
-      const m=DATA.meta; el.innerHTML = `${t("ov_date")} <b>${m.data_date||m.run_date||"—"}</b>`; }   // 2026-09-07 老板: 扫描数/命中数下线
+      const m=DATA.meta, e=FVF.esc, dd=String(m.data_date||m.run_date||"—");
+      const ua=(typeof m.updated_at==="string" && m.updated_at.length>=16) ? m.updated_at.slice(5,16) : (String(m.run_date||"").slice(5)||"—");
+      el.innerHTML = `<span class="ovFull">${t("ov_date")} <b>${e(dd)}</b></span>`+
+        `<span class="ovShort">${t("ov_date_s")} <b>${e(dd.length===10?dd.slice(5):dd)}</b> · ${t("ov_run_s")} <b>${e(ua)}</b></span>`; }
     setTimeout(ovMini, 0); window.__ovMini = ovMini;   // 语言/日期切换后由 renderOverview 重刷
     // 搬运: 温度计/风险偏好 -> 作战台折叠区; 权重实验室 -> 主表折叠区
     setTimeout(()=>{
@@ -3593,6 +3827,9 @@
   })();
 
   LS.init({$, t, isNum, escH, tagClass, tagText, dash, getData:()=>DATA, getLive:()=>LIVE_DATA, openDetail, getCur:()=>curC, market: LS_MARKET});
+  watchRunDates();                                                         // 优质榜 / 回测标题的跑批日 -> 数据日
+  setInterval(()=>{ try{ renderFresh(); }catch(e){} }, 600000);            // 页面开着跨过零点 / 开市日, 提示条自己更新
+  document.addEventListener("visibilitychange", ()=>{ if(!document.hidden){ try{ renderFresh(); }catch(e){} } });
   setTimeout(()=>{ LS.renderBacktest(); LS.renderCuosha(); LS.renderQuality(); LS.renderJournal(); LS.renderPaper(); LS.renderBiweekly(); LS.renderDeck(); LS.renderCustomPf(); }, 0);
 })();
 </script>
