@@ -55,6 +55,8 @@ NEWS_MIN_RATE = 0.20      # 有标题的票占比低于这个数 = 新闻源整�
 def news_health(profiles: dict, candidates: list) -> dict:
     """本轮新闻源体检 —— 只看导出物本身 (看板展示什么就按什么判, 重导某个历史日期同样成立)。
     需要新闻的票 = 有深度档案的 (档案里的 news, 流水线阶段 C 取) ∪ 错杀候选 (newsflag 导出时现取的 news)。
+    2026-10-06 回修起数的是**本票相关**的标题 (非本公司新闻在 datasource.news_items 取数时已过滤, 过滤条数在 meta.news_stats.fetch.filtered):
+    新闻源返回的全是别家新闻时这里就是 0 条 → ok=False, 不再被别家标题撑成「正常」。
       ok = False : 一条标题都没有 (总数 0), 或有标题的票占比 < NEWS_MIN_RATE
       ok = True  : 其余
       ok = None  : 本轮没有任何票需要新闻 (无从判断, 看板照旧显示)
@@ -238,6 +240,8 @@ def build_payload(run_date: str | None = None) -> dict:
         log.info("财报日标注: %d 只", n_e)
         # "为什么跌"线索: 错杀候选的近期新闻标题关键词 🚩 (只拉错杀股, 数量小)
         from . import newsflag
+        from . import datasource as _dsr
+        _dsr.register_news_names({c["code"]: c.get("name") for c in candidates if c.get("code") and c.get("name")})   # 相关性判据用公司名
         n_f = newsflag.annotate(candidates, as_of=str(runlog.get("data_date") or run_date)[:10])
         log.info("错杀候选新闻标记: %d 只有🚩", n_f)
     except Exception as e:

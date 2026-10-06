@@ -12,6 +12,10 @@
   · 解析: yfinance 新旧两种结构、RSS 两种形态 (Yahoo: 域名当出版方 + 去 .tsrc; Google: <source> + 去标题尾巴)、拒 DTD。
   · 档案新闻 fetch_news 与错杀红旗 market.news_titles 走同一条链。
   · 体检 news_health: 总数 0 或有标题的票 < 20% → False (meta.news_source_ok=false + WARNING); 没有票需要新闻 → None。
+  · 非本公司新闻过滤 (2026-10-06 回修): 一条算本票新闻 = 标题提到公司名 (股票池叫法归一: 去 Inc / Corporation / Class A Common Stock /
+    ADS …, 多词名的非泛词首词也认) 或代码 (≤2 字母只认 $X / (X) / :X), 或新闻源只把它挂在本票代码下 (relatedTickers 去掉指数/期货后只剩本票);
+    挂着本代码的别家稿子 (yahoo_search 每条都挂查询代码, 10-06 服务器实测) 与综述不算; 一家返回的全是别家新闻 = 没取到 (计入熔断);
+    过滤条数进 news_round_stats()["filtered"] → meta.news_stats.fetch; 当日缓存键 news4。
 运行 (仓库根): python -X utf8 -m pytest -c ../stock-core/pytest.ini --rootdir . tests -q
 """
 from __future__ import annotations
@@ -36,9 +40,13 @@ TODAY = dt.date.today()
 D1 = TODAY - dt.timedelta(days=1)
 
 
-def item(title: str, source: str = "yfinance", day: dt.date = D1) -> dict:
-    return {"title": title, "publisher": "Wire", "time": f"{day.isoformat()} 10:00", "date": day.isoformat(),
-            "url": "https://example.com/" + title.lower().replace(" ", "-"), "source": source}
+def item(title: str, source: str = "yfinance", day: dt.date = D1, tickers: list | None = None) -> dict:
+    """桩返回的一条。tickers 不给 = 由 Feeds.chain 补成 [本票代码] (新闻源说这条讲的就是这只票); 给 [] / 别的代码 = 测相关性过滤。"""
+    h = {"title": title, "publisher": "Wire", "time": f"{day.isoformat()} 10:00", "date": day.isoformat(),
+         "url": "https://example.com/" + title.lower().replace(" ", "-"), "source": source}
+    if tickers is not None:
+        h["tickers"] = list(tickers)
+    return h
 
 
 class Feeds:
@@ -65,7 +73,8 @@ class Feeds:
                     v = self.tables[name].get(sym, [])
                     if isinstance(v, Exception):
                         raise v
-                    return list(v)
+                    # 没写 tickers 的条目默认带本票代码 (= 新闻源认为这条讲的是这只票), 让老用例不用关心相关性过滤
+                    return [dict(x, tickers=x.get("tickers", [sym])) if isinstance(x, dict) else x for x in v]
                 finally:
                     with self._lock:
                         self.active -= 1
@@ -288,11 +297,106 @@ def test_parse_yf_news_nested_and_flat_search_shapes():
     got = ds.parse_yf_news(raw, "yahoo_search")
     assert got == [
         {"title": "Nested story", "publisher": "Reuters", "time": f"{D1.isoformat()} 11:41", "date": D1.isoformat(),
-         "url": "https://x/a", "source": "yahoo_search"},
+         "url": "https://x/a", "source": "yahoo_search", "tickers": []},
         {"title": "Flat search story", "publisher": "Motley Fool", "time": f"{D1.isoformat()} 12:00", "date": D1.isoformat(),
-         "url": "https://x/b", "source": "yahoo_search"},
-        {"title": "No time no link", "publisher": "—", "time": "—", "date": "", "url": "#", "source": "yahoo_search"}]
+         "url": "https://x/b", "source": "yahoo_search", "tickers": ["MSFT"]},                    # relatedTickers 原样带出 (相关性判据)
+        {"title": "No time no link", "publisher": "—", "time": "—", "date": "", "url": "#", "source": "yahoo_search", "tickers": []}]
     assert ds.parse_yf_news(None, "yfinance") == [] and ds.parse_yf_news([], "yfinance") == []
+    nested = ds.parse_yf_news([{"content": {"title": "Nested with finance block", "pubDate": f"{D1.isoformat()}T11:00:00Z",
+                                            "canonicalUrl": {"url": "https://x/n"},
+                                            "finance": {"stockTickers": [{"symbol": "brk-b"}, {"symbol": "AAPL"}]}},
+                                "relatedTickers": ["NVDA"]}], "yfinance")
+    assert nested[0]["tickers"] == ["AAPL", "BRK-B", "NVDA"]
+
+
+# =========================================================================== 非本公司新闻过滤 (2026-10-06 回修)
+def test_company_name_variants_and_title_matching():
+    """股票池叫法 → 认标题的叫法; 10-05 看板上误标的三条红旗与精研页混进的别家标题在这里必须判为不相关。"""
+    v = ds.company_name_variants
+    assert v("Teradata Corporation Common Stock") == ["Teradata"]
+    assert v("Oceaneering International Inc. Common Stock") == ["Oceaneering International", "Oceaneering"]
+    assert v("Array Digital Infrastructure Inc. Common Shares") == ["Array Digital Infrastructure", "Array"]
+    assert v("SAP  SE ADS") == ["SAP"] and v("UiPath Inc. Class A Common Stock") == ["UiPath"]
+    assert v("American Airlines Group Inc.") == ["American Airlines"]              # 泛词首词不单独认
+    assert v("Eli Lilly and Company") == ["Eli Lilly"] and v("The Walt Disney Company") == ["Walt Disney", "Walt"]
+    assert v("Bank of America Corporation") == ["Bank of America"] and v("AT&T Inc.") == ["AT&T"]
+    assert v("Berkshire Hathaway Inc. Class B") == ["Berkshire Hathaway", "Berkshire"]
+    assert v("Lowe's Companies, Inc.") == ["Lowe's"] and v("") == [] and v(None) == []
+    ds.reset_news_round()
+    ds.register_news_names({"TDC": "Teradata Corporation Common Stock", "FRPT": "Freshpet, Inc.", "PGNY": "Progyny, Inc.",
+                            "NVDA": "NVIDIA Corporation", "TGT": "Target Corporation", "OII": "Oceaneering International Inc. Common Stock",
+                            "brk.b": "Berkshire Hathaway Inc. Class B", "GM": "General Motors Company"})
+    j = ds._news_judge("TDC")
+    assert j({"title": "Blackbaud CEO Mike Gianoni Invests in NGS, Joins as Strategic Advisor"}, "yfinance") is None   # 10-05 误标 TDC
+    assert j({"title": "Teradata's Chief Operating Officer Dumps Over 48,000 Shares"}, "yfinance") == "title"
+    assert j({"title": "3 Value Stocks We're Skeptical Of (NYSE:TDC)"}, "yahoo_rss") == "title" and j({"title": "Buy $TDC now"}, "yahoo_rss") == "title"
+    assert j({"title": "ATDC merger talk"}, "yahoo_rss") is None and j({"title": "tdc lowercase"}, "yahoo_rss") is None
+    assert j({"title": "Anything", "tickers": ["TDC"]}, "yahoo_search") == "ticker"                    # 只挂在 TDC 下
+    assert j({"title": "Market wrap", "tickers": ["TDC", "^GSPC", "CL=F"]}, "yahoo_search") == "ticker"   # 指数 / 期货忽略
+    assert j({"title": "Teradata's COO sells shares", "tickers": ["XYZ"]}, "yahoo_search") == "title"   # 标题提到就算, 不管挂在哪
+    assert j({"title": "Teradata's COO sells shares"}, "yahoo_search") == "title"
+    # 10-06 服务器实测的形态: 搜索接口把别家稿子也挂在 TDC 下 → 单看 relatedTickers 挡不住, 这里必须判不相关
+    assert j({"title": "Blackbaud CEO Mike Gianoni Invests in NGS, Joins as Strategic Advisor", "tickers": ["BLKB", "TDC"]}, "yahoo_search") is None
+    assert j({"title": "Sandisk Corporation (SNDK) Up 23.6% Since Last Earnings Report", "tickers": ["SNDK", "TDC", "^GSPC"]}, "yahoo_search") is None
+    assert j({"title": "NTAP Q1 Earnings Beat Estimates on Hybrid, Public Cloud Revenue Growth", "tickers": ["NTAP", "SMCIP", "SNDK", "TDC"]}, "yahoo_search") is None
+    assert j({"title": "Teradata (TDC) Stock Trades At a Discount After a 48% Slump", "tickers": ["TDC"]}, "yahoo_search") == "title"
+    assert ds._news_judge("FRPT")({"title": "Exxon Mobil downgraded, BP upgraded: Wall Street's top analyst calls"}, "yfinance") is None
+    assert ds._news_judge("PGNY")({"title": "3 Profitable Stocks with Warning Signs"}, "yfinance") is None
+    assert ds._news_judge("NVDA")({"title": "Nvidia (NVDA) Is At The Center Of An $8 Billion AI Financing Shift"}, "google_rss") == "title"
+    assert ds._news_judge("NVDA")({"title": "Why nvidia keeps winning"}, "google_rss") == "title"      # 全大写名字不分大小写
+    assert ds._news_judge("TGT")({"title": "Analysts raise price target on Walmart"}, "google_rss") is None    # 普通词小写不算
+    assert ds._news_judge("TGT")({"title": "Target Q3 comps fall short"}, "google_rss") == "title"
+    assert ds._news_judge("OII")({"title": "Should Oceaneering's New Five-Year U.S. Navy Contract Change Your View?"}, "yfinance") == "title"
+    assert ds._news_judge("BRK-B")({"title": "Berkshire trims Apple stake", "tickers": []}, "yfinance") == "title"
+    assert ds._news_judge("BRK-B")({"title": "x", "tickers": ["BRK.B"]}, "yahoo_search") == "ticker"
+    assert ds._news_judge("GM")({"title": "GM recalls trucks"}, "yfinance") is None                     # 2 字母代码只认 $GM / (GM) / :GM
+    assert ds._news_judge("GM")({"title": "Auto stocks: (GM) leads"}, "yfinance") == "title"
+    assert ds._news_judge("GM")({"title": "General Motors recalls trucks"}, "yfinance") == "title"
+    assert ds._news_judge("ZZZZ")({"title": "ZZZZ files 8-K"}, "yfinance") == "title"                  # 没登记公司名: 只认代码
+    assert ds._news_judge("ZZZZ")({"title": "Some company files 8-K"}, "yfinance") is None
+    # Google News 按公司名搜 (没登记的按代码)
+    assert ds._google_query("TDC") == '"Teradata" stock when:7d' and ds._google_query("ZZZZ") == "ZZZZ stock when:7d"
+    ds.reset_news_round()
+
+
+def test_unrelated_items_are_filtered_per_source_and_counted(feeds, caplog):
+    """10-05 线上的形态: yahoo_search 返回一堆别家新闻混着几条本票的 → 只留本票的 (严格: 只认 relatedTickers);
+    yfinance / RSS 认 relatedTickers 或标题; 一家返回的全是别家新闻 = 这一家没取到 (计熔断, 问下一家); 过滤条数进统计。"""
+    ds.register_news_names({"TDC": "Teradata Corporation Common Stock"})
+    feeds.tables["yahoo_search"]["TDC"] = [
+        item("Blackbaud CEO Mike Gianoni Invests in NGS", "yahoo_search", tickers=["BLKB", "TDC"]),   # 挂着 TDC 的别家稿子 (10-06 实测形态)
+        item("Teradata's COO sells shares", "yahoo_search", tickers=[]),                             # 标题提到 → 留
+        item("UBS Adjusts Teradata Price Target to $32", "yahoo_search", tickers=["TDC"]),           # 留
+        item("3 Value Stocks We're Skeptical Of", "yahoo_search", tickers=["BBWI", "BFAM", "TDC"]),  # 综述里列了本票: 不算
+        item("NTAP Q1 Earnings Beat Estimates", "yahoo_search", tickers=["NTAP", "TDC"]),            # 别家稿子
+        item("Reflecting On Data Infrastructure Stocks' Q2 Earnings: Teradata (NYSE:TDC)", "yahoo_search", tickers=["TDC", "^GSPC"])]
+    got = ds.news_items("TDC")
+    assert [x["title"][:20] for x in got] == ["Teradata's COO sells", "UBS Adjusts Teradata", "Reflecting On Data I"]
+    assert all("tickers" not in x for x in got)
+    # 第一家 (yfinance) 返回的全是别家新闻: 等于没取到, 接着问 yahoo_search; RSS 按标题认
+    feeds.tables["yfinance"]["FRPT"] = [item("Exxon Mobil downgraded, BP upgraded", tickers=[]), item("Oil majors rally", tickers=["XOM"])]
+    feeds.tables["yahoo_search"]["FRPT"] = [item("Pet food demand", "yahoo_search", tickers=["CHWY"])]
+    feeds.tables["yahoo_rss"]["FRPT"] = [item("Freshpet (FRPT) raises guidance", "yahoo_rss", tickers=[]),
+                                         item("3 Profitable Stocks with Warning Signs", "yahoo_rss", tickers=[])]
+    got = ds.news_items("FRPT")
+    assert [(x["title"], x["source"]) for x in got] == [("Freshpet (FRPT) raises guidance", "yahoo_rss")]
+    assert [n for n, s in feeds.calls if s == "FRPT"] == ["yfinance", "yahoo_search", "yahoo_rss"]
+    st = ds.news_round_stats()
+    assert (st["fetched"], st["with_news"], st["items"]) == (2, 2, 4)                       # items 只数留下的本票标题 (3 + 1)
+    assert st["filtered"] == 7 and st["filtered_by_source"] == {"yfinance": 2, "yahoo_search": 4, "yahoo_rss": 1}   # 3 + (2 + 1 + 1)
+    assert st["by_source"] == {"yahoo_search": 1, "yahoo_rss": 1}
+    # 四家都只有别家新闻: 空表 (不抛), 不进当日缓存, 熔断计数照加
+    feeds.tables["yfinance"]["XXX"] = [item("Someone else", tickers=["ABC"])]
+    feeds.tables["google_rss"]["XXX"] = [item("Nothing about us", "google_rss", tickers=[])]
+    assert ds.news_items("XXX") == [] and ds.fetch_news("XXX") == [] and mk.news_titles("XXX") == []
+    assert ds.news_round_stats()["filtered"] == 9                                           # + yfinance 1 + google_rss 1
+    # 错杀红旗不再被别家标题点亮
+    from screener import newsflag
+    cands = [{"code": "TDC", "cuosha_score": 80}, {"code": "FRPT", "cuosha_score": 70}]
+    newsflag.annotate(cands, as_of=TODAY.isoformat())
+    assert [n["t"][:20] for n in cands[0]["news"]] == ["Teradata's COO sells", "UBS Adjusts Teradata", "Reflecting On Data I"]
+    assert cands[0]["news_flags"] == []                                                      # 「Blackbaud CEO」不再给 TDC 点 executive change
+    assert [n["t"] for n in cands[1]["news"]] == ["Freshpet (FRPT) raises guidance"] and cands[1]["news_flags"] == ["guidance"]
 
 
 # =========================================================================== 整轮体检 → meta.news_source_ok
@@ -332,6 +436,7 @@ def test_build_payload_writes_news_source_ok_early_in_meta_and_warns(feeds, monk
         p = _payload(monkeypatch, {"AAA": _prof(0), "BBB": _prof(0)})
     assert p["meta"]["news_source_ok"] is False
     assert {k: p["meta"]["news_stats"][k] for k in ("n", "with_news", "items", "rate")} == {"n": 2, "with_news": 0, "items": 0, "rate": 0.0}
+    assert p["meta"]["news_stats"]["fetch"]["filtered"] == 0 and "filtered_by_source" in p["meta"]["news_stats"]["fetch"]   # 过滤条数随统计进 meta
     assert any("新闻源不可用" in r.getMessage() and r.levelno == logging.WARNING for r in caplog.records)
     js = "window.__ASHARE__ = " + json.dumps(p, ensure_ascii=False)
     assert 0 < js.index('"news_source_ok": false') < 600          # 数据总览只读文件头抠这个键: 必须在 meta 靠前的位置

@@ -123,6 +123,7 @@ def run(use_cache=True):
         log.info("市场地位分组: %d 个行业组, 覆盖 %d 只", _u["_grp"].nunique(), len(dom_map))
 
     stocks = [(r["code"], r["name"], r["sector"]) for _, r in universe.iterrows()]
+    ds.register_news_names({c: n for c, n, _ in stocks})   # 新闻相关性判据 (非本公司新闻过滤) 与 Google News 查询词用公司名
     workers = CONFIG["fetch"]["max_workers"] or min(12, (os.cpu_count() or 4) * 2)
 
     _bench = ds.fetch_benchmark()

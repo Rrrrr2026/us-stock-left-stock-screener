@@ -780,7 +780,15 @@ def _news_tone(title: str) -> str:
 #   ④ Google News RSS search          (两边都 200)
 # 纪律: 每次调用有墙钟硬期限 (线程守护, 不靠 socket 超时); ②③④ 串行 + 最小间隔 (档案阶段是多线程, 不并发敲兜底端点);
 #       某一家连续 _NEWS_BREAK_AFTER 只票没取到 → 本轮熔断, 不再问它; 同一进程内每只票只取一次 (导出要调三遍 build_payload)。
+# 非本公司新闻过滤 (2026-10-06 回修): ② 是按查询词搜全站的接口, 10-05 看板 1330 条档案新闻里标题提到本票代码或公司名的只有 28%,
+#       错杀🚩 把「Blackbaud CEO …」算到 TDC 头上、「Exxon Mobil downgraded」算到 FRPT 头上。relatedTickers 挡不住: 搜索接口返回的
+#       每一条都挂着查询代码 (10-06 服务器生产 venv 实测 TDC 20/20, 「Blackbaud CEO …」「Sandisk Up 23.6%」「NTAP Q1 Earnings」都在)。
+#       现在每条都过相关性 (_relevant, 四家同一套): ① 标题出现公司名/代码 (公司名来自股票池, 流水线与导出用 register_news_names 登记,
+#       叫法由 company_name_variants 归一; 没登记的票只认代码), 或 ② 新闻源只把它挂在本票代码下 (relatedTickers 去掉指数/期货后只剩本票);
+#       挂着本代码的别家稿子、把本票列在一串代码里的综述都不算。一家返回的全是别家新闻 = 这一家没取到 (计入熔断计数, 接着问下一家);
+#       过滤条数进 news_round_stats()["filtered"] → meta.news_stats.fetch。
 _NEWS_PROVIDERS = ("yfinance", "yahoo_search", "yahoo_rss", "google_rss")
+_NEWS_NON_EQUITY = ("^", "=", ".PVT", ".NYB")   # relatedTickers 里的指数 / 期货与外汇 / 私有公司 / 美元指数代码: 判「只挂在本票下」时忽略
 _NEWS_DEADLINE_S = 20
 _NEWS_BREAK_AFTER = 8
 _NEWS_GAP_S = 0.25
@@ -792,7 +800,120 @@ _NEWS_LOCK = threading.Lock()          # 保护下面三个状态
 _NEWS_GATE = threading.Lock()          # 兜底源串行闸
 _NEWS_MEMO: dict = {}                  # yfinance 代码 -> 本轮取到的条目 (空表也记: 四家都问过了)
 _NEWS_FAILS = {p: 0 for p in _NEWS_PROVIDERS}    # 各家连续没取到的票数
+_NEWS_FILTERED = {p: 0 for p in _NEWS_PROVIDERS}  # 各家本轮被判为非本公司新闻而过滤掉的条数
+_NEWS_NAMES: dict = {}                  # yfinance 代码 -> 公司名 (register_news_names; 相关性判据与 Google 查询词用)
 _NEWS_LAST_CALL = [0.0]
+# 公司名归一: 去掉这些尾巴 (公司形式 / 股类 / 存托凭证 / 连接词) 得核心名
+_NAME_SUFFIX = {"inc", "incorporated", "corp", "corporation", "co", "company", "companies", "ltd", "limited", "plc", "llc",
+                "lp", "l.p", "nv", "n.v", "sa", "s.a", "se", "ag", "a.g", "holdings", "holding", "group", "trust", "common",
+                "stock", "stocks", "shares", "share", "ordinary", "class", "a", "b", "c", "ads", "adr", "adss", "depositary",
+                "depository", "american", "receipts", "receipt", "units", "unit", "warrants", "warrant", "preferred", "the",
+                "and", "&", "of", "each", "representing", "new"}
+# 多词核心名的首词单独也认 (Oceaneering International → Oceaneering), 但这些泛词不行 (American / General / Johnson …)
+_NAME_GENERIC_FIRST = {"american", "first", "united", "general", "national", "international", "global", "advanced", "digital",
+                       "energy", "capital", "financial", "health", "healthcare", "bank", "group", "allied", "standard", "pacific",
+                       "southern", "northern", "western", "eastern", "central", "royal", "texas", "california", "boston", "chicago",
+                       "atlantic", "universal", "world", "north", "south", "east", "west", "great", "golden", "liberty", "heritage",
+                       "pioneer", "premier", "prime", "summit", "community", "home", "life", "star", "blue", "green", "johnson",
+                       "marathon", "phillips", "discover", "charter", "southwest", "morgan", "wells", "smith", "williams",
+                       "franklin", "lincoln", "jefferson", "washington", "hamilton", "columbia", "continental", "consolidated",
+                       "diversified", "integrated", "innovative", "interactive", "strategic", "industrial", "medical",
+                       "pharmaceutical", "technology", "technologies", "systems", "solutions", "services", "brands", "foods",
+                       "motors", "airlines", "electric", "power", "water", "gas", "oil", "gold", "silver", "copper", "steel",
+                       "metals", "mining", "realty", "properties", "partners", "income", "growth", "value", "dividend", "united",
+                       "super", "micro", "simply", "live", "open", "real", "total", "main", "best", "big", "core", "one", "two",
+                       "three", "four", "five", "six", "seven", "eight", "nine", "ten"}
+_NAME_CUT_RE = re.compile(r"\s+[-–(].*$")   # 「Name - Class A」「Name (The)」→ 砍掉尾巴
+
+
+def register_news_names(mapping) -> None:
+    """登记 代码 → 公司名 (股票池里的叫法), 相关性判据与 Google News 查询词都用它; 不登记的票只认代码。"""
+    with _NEWS_LOCK:
+        for code, name in (mapping or {}).items():
+            if code and name:
+                _NEWS_NAMES[_yf_symbol(code)] = str(name).strip()
+
+
+def company_name_variants(name) -> list:
+    """股票池里的公司名 → 用来认标题的叫法: 砍掉尾巴、去掉公司形式/股类/存托凭证后缀 (Inc / Corporation / Class A Common Stock / ADS …)
+    得核心名; 核心名多于一个词、首词 ≥4 个字母且不是泛词时再加首词 (Oceaneering International → Oceaneering; Array Digital Infrastructure → Array;
+    American Airlines 不加)。"""
+    s = _NAME_CUT_RE.sub("", str(name or "").strip())
+    toks = [t for t in re.split(r"\s+", s.replace(",", " ")) if t]
+    while toks and toks[-1].lower().rstrip(".") in _NAME_SUFFIX:
+        toks.pop()
+    while toks and toks[0].lower() == "the":
+        toks.pop(0)
+    core = " ".join(toks).strip(" .,")
+    if not core:
+        return []
+    out = [core]
+    if len(toks) > 1:
+        first = toks[0].strip(".,'’")
+        if len(first) >= 4 and first.isalpha() and first.lower() not in _NAME_GENERIC_FIRST:
+            out.append(first)
+    return out
+
+
+def _alias_re(alias: str):
+    """叫法 → 整词正则 (前后不能是字母数字; 多词之间空白任意)。全大写且 ≥4 字符的 (NVIDIA / ASML) 不分大小写 —— 标题常写 Nvidia;
+    其余按原样大小写 (Target / Apple / Block 这类同时是普通单词的名字, 小写的 target / apple 不算)。"""
+    pat = re.escape(alias).replace("\\ ", r"\s+")
+    return re.compile(r"(?<![A-Za-z0-9])" + pat + r"(?![A-Za-z0-9])", re.IGNORECASE if (alias.isupper() and len(alias) >= 4) else 0)
+
+
+def _ticker_re(sym: str):
+    """代码在标题里的写法: TDC / $TDC / (TDC) / NYSE:TDC (区分大小写; BRK-B 与 BRK.B 都认)。≤2 个字母的代码 (F / GM / T) 太像普通词,
+    只认带 $ / ( / : 前缀的写法。"""
+    alts = sorted({sym, sym.replace("-", ".")}, key=len, reverse=True)
+    alt = "|".join(re.escape(a) for a in alts)
+    if len(sym.replace("-", "").replace(".", "")) <= 2:
+        return re.compile(r"(?:\$|\(|:\s?)(?:" + alt + r")(?![A-Za-z0-9])")
+    return re.compile(r"(?<![A-Za-z0-9.])(?:" + alt + r")(?![A-Za-z0-9])")
+
+
+def _news_judge(sym: str):
+    """→ judge(item, source) → "title" (标题里有公司名或代码) / "ticker" (新闻源只把这条挂在本票代码下: relatedTickers 去掉指数/期货后
+    非空且只有本票) / None (非本票新闻: 别家稿子、把本票列在一串代码里的综述、没有任何证据的)。source 只作记档, 四家同一套判据。"""
+    with _NEWS_LOCK:
+        name = _NEWS_NAMES.get(sym)
+    pats = [_alias_re(v) for v in company_name_variants(name)] if name else []
+    pats.append(_ticker_re(sym))
+    syms = {sym, sym.replace("-", ".")}
+
+    def judge(item: dict, source: str):
+        if any(p.search(str(item.get("title") or "")) for p in pats):
+            return "title"
+        eq = {str(t).upper() for t in (item.get("tickers") or [])
+              if isinstance(t, str) and t.strip() and not any(x in str(t).upper() for x in _NEWS_NON_EQUITY)}
+        return "ticker" if eq and eq <= syms else None
+    return judge
+
+
+def _relevant(items: list, sym: str, source: str) -> tuple:
+    """一家新闻源返回的条目 → (本票的, 别家的)。tickers 只是判据, 不进缓存与看板。"""
+    judge = _news_judge(sym)
+    kept, dropped = [], []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        clean = {k: v for k, v in it.items() if k != "tickers"}
+        (kept if judge(it, source) else dropped).append(clean)
+    return kept, dropped
+
+
+def _related_tickers(it: dict, c: dict) -> list:
+    """yfinance 条目里的关联代码: 平铺结构的 relatedTickers (Search(...).news 有), 新结构 content.finance.stockTickers[].symbol。"""
+    out = set()
+    for v in (it.get("relatedTickers"), c.get("relatedTickers")):
+        if isinstance(v, list):
+            out |= {str(t).upper() for t in v if isinstance(t, str) and t.strip()}
+    fin = c.get("finance") if isinstance(c.get("finance"), dict) else {}
+    for t in (fin.get("stockTickers") or []) if isinstance(fin.get("stockTickers"), list) else []:
+        s = t.get("symbol") if isinstance(t, dict) else t
+        if isinstance(s, str) and s.strip():
+            out.add(s.upper())
+    return sorted(out)
 
 
 def _hard_deadline(fn, seconds: float):
@@ -826,7 +947,7 @@ def _news_item(title, publisher, when, url, source) -> dict | None:
 
 
 def parse_yf_news(raw, source: str) -> list:
-    """yfinance 新旧两种新闻结构 ({content:{...}} 与平铺; Search(...).news 是平铺那种) → 统一结构。"""
+    """yfinance 新旧两种新闻结构 ({content:{...}} 与平铺; Search(...).news 是平铺那种) → 统一结构 (+ tickers: 关联代码, 相关性判据)。"""
     out = []
     for it in raw or []:
         if not isinstance(it, dict):
@@ -849,6 +970,7 @@ def parse_yf_news(raw, source: str) -> list:
             when = None
         item = _news_item(c.get("title"), publisher, when, url, source)
         if item:
+            item["tickers"] = _related_tickers(it, c)
             out.append(item)
     return out[:_NEWS_FETCH_N]
 
@@ -915,11 +1037,18 @@ def _news_from_rss(url: str, source: str) -> list:
     return parse_rss(r.content, source)
 
 
+def _google_query(sym: str) -> str:
+    """Google News RSS 的查询词: 登记了公司名按核心名搜 ("Teradata" stock when:7d), 没登记按代码 (TDC stock when:7d)。"""
+    with _NEWS_LOCK:
+        core = (company_name_variants(_NEWS_NAMES.get(sym)) or [None])[0]
+    return f'"{core}" stock when:7d' if core else f"{sym} stock when:7d"
+
+
 def _news_chain(sym: str) -> list:
     """(来源名, 调用, 是否走串行闸)。顺序 = 取用优先级。"""
     from urllib.parse import quote, quote_plus
     y_url = _YAHOO_RSS_URL.format(sym=quote(sym))
-    g_url = _GOOGLE_RSS_URL.format(q=quote_plus(f"{sym} stock when:7d"))
+    g_url = _GOOGLE_RSS_URL.format(q=quote_plus(_google_query(sym)))      # 登记了公司名按名搜 (2026-10-06 回修)
     return [("yfinance", lambda: _news_from_ticker(sym), False),
             ("yahoo_search", lambda: _news_from_search(sym), True),
             ("yahoo_rss", lambda: _news_from_rss(y_url, "yahoo_rss"), True),
@@ -947,6 +1076,12 @@ def _news_fetch(sym: str) -> list:
         except Exception as e:                        # noqa: BLE001 —— 新闻永远不许打断流水线
             log.debug("news %s via %s 失败: %s", sym, name, e)
             items = []
+        if items:                                     # 别家公司的新闻不算取到 (2026-10-06 回修)
+            items, dropped = _relevant(items, sym, name)
+            if dropped:
+                with _NEWS_LOCK:
+                    _NEWS_FILTERED[name] += len(dropped)
+                log.debug("news %s via %s: 过滤非本公司 %d 条, 留 %d 条", sym, name, len(dropped), len(items))
         with _NEWS_LOCK:
             if items:
                 _NEWS_FAILS[name] = 0
@@ -959,16 +1094,19 @@ def _news_fetch(sym: str) -> list:
     return []
 
 
-def news_items(code: str) -> list:
-    """这只票的新闻 (统一结构, 多源兜底)。同一进程内每只票只取一次 (空结果也记住: 四家都问过了);
-    非空结果另有当日文件缓存 (键 news3; 旧键 news2 是带 tone 的旧结构, 不混用)。永不抛异常。"""
+def news_items(code: str, name: str | None = None) -> list:
+    """这只票的新闻 (统一结构, 多源兜底, 只留本票的)。同一进程内每只票只取一次 (空结果也记住: 四家都问过了);
+    非空结果另有当日文件缓存 (键 news4 = 过滤后的; 旧键 news3 是 10-04..10-05 没过滤的, news2 是带 tone 的旧结构, 都不混用)。
+    name = 公司名 (给了就登记, 相关性判据用); 永不抛异常。"""
     sym = _yf_symbol(code)
+    if name:
+        register_news_names({sym: name})
     with _NEWS_LOCK:
         if sym in _NEWS_MEMO:
             return _NEWS_MEMO[sym]
     items = None
     try:
-        key = _cache_key("news3", sym, dt.date.today().isoformat())
+        key = _cache_key("news4", sym, dt.date.today().isoformat())
         c = _cache_load(key)
         if isinstance(c, list) and c:
             items = c
@@ -989,29 +1127,34 @@ def news_round_stats() -> dict:
     with _NEWS_LOCK:
         memo = dict(_NEWS_MEMO)
         tripped = [p for p in _NEWS_PROVIDERS if _NEWS_FAILS[p] >= _NEWS_BREAK_AFTER]
+        filtered = dict(_NEWS_FILTERED)
     by: dict = {}
     for items in memo.values():
         if items:
             s = items[0].get("source") or "?"
             by[s] = by.get(s, 0) + 1
     return {"fetched": len(memo), "with_news": sum(1 for v in memo.values() if v),
-            "items": sum(len(v) for v in memo.values()), "by_source": by, "tripped": tripped}
+            "items": sum(len(v) for v in memo.values()), "by_source": by, "tripped": tripped,
+            # 被判为非本公司新闻而过滤掉的条数 (2026-10-06 回修): items 已经只算本票的
+            "filtered": sum(filtered.values()), "filtered_by_source": {p: n for p, n in filtered.items() if n}}
 
 
 def reset_news_round() -> None:
     """清掉本进程的新闻记忆与熔断计数 (用例用; 流水线每天是新进程, 不需要调)。"""
     with _NEWS_LOCK:
         _NEWS_MEMO.clear()
+        _NEWS_NAMES.clear()
         for p in _NEWS_PROVIDERS:
             _NEWS_FAILS[p] = 0
+            _NEWS_FILTERED[p] = 0
     _NEWS_LAST_CALL[0] = 0.0
 
 
-def fetch_news(code: str, limit: int = 12) -> list:
-    """个股新闻 (标题/来源/时间/链接), 关键词法粗分 利好/利空/中性。取数见 news_items (多源兜底); source 标明走的哪一家。"""
+def fetch_news(code: str, limit: int = 12, name: str | None = None) -> list:
+    """个股新闻 (标题/来源/时间/链接), 关键词法粗分 利好/利空/中性。取数见 news_items (多源兜底 + 只留本票的); source 标明走的哪一家。"""
     out = []
     try:
-        for it in news_items(code)[:limit]:
+        for it in news_items(code, name)[:limit]:
             out.append({"title": it["title"], "publisher": it.get("publisher") or "—",
                         "time": it.get("time") or "—", "url": it.get("url") or "#",
                         "tone": _news_tone(it["title"]), "source": it.get("source")})
