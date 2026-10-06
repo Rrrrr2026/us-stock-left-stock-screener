@@ -64,6 +64,18 @@ def fetch_page(session: requests.Session, start: int) -> dict:
     return r.json()
 
 
+def _pick(*vals):
+    """第一个非 None 的值 (TradingView 个别行目标价均值为 None)."""
+    for v in vals:
+        if v is not None:
+            return v
+    return 0.0
+
+
+def _mid(lo, hi):
+    return (lo + hi) / 2 if (lo is not None and hi is not None) else None
+
+
 def main() -> None:
     session = requests.Session()
     all_rows, total = [], None
@@ -92,6 +104,7 @@ def main() -> None:
     sidx = {s: i for i, s in enumerate(sectors)}
 
     compact = []
+    n_none = 0
     for r in qual:
         d = r["d"]
         compact.append([
@@ -100,19 +113,27 @@ def main() -> None:
             sidx[d[idx["sector"]] or "(未分类)"],
             d[idx["close"]],
             d[idx["price_target_low"]],
-            round(float(d[idx["price_target_average"]]), 2),
+            # 2026-10-06 修: TradingView 个别行 price_target_average / recommendation_mark / market_cap_basic 为 None,
+            # 10-06 00:15 在 market_cap_basic 上 TypeError 整跑崩掉 (方糖已报)。None 一律降级而不是崩: 均值缺 → 用中位/(低+高)/2,
+            # 评级分缺 → 0.0, 市值缺 → 0.0 (排到末尾), 并计数打印。
+            round(float(_pick(d[idx["price_target_average"]], d[idx["price_target_median"]],
+                              _mid(d[idx["price_target_low"]], d[idx["price_target_high"]]))), 2),
             d[idx["price_target_high"]],
             d[idx["price_target_median"]],
-            round(float(d[idx["recommendation_mark"]]), 2),
+            round(float(d[idx["recommendation_mark"]] if d[idx["recommendation_mark"]] is not None else 0.0), 2),
             d[idx["recommendation_total"]],
             d[idx["recommendation_buy"]] or 0,             # 强烈买入人数
             d[idx["recommendation_over"]] or 0,            # 买入
             d[idx["recommendation_hold"]] or 0,            # 持有
             d[idx["recommendation_under"]] or 0,           # 卖出
             d[idx["recommendation_sell"]] or 0,            # 强烈卖出
-            round(d[idx["market_cap_basic"]] / 1e9, 3),    # 市值（十亿美元）
+            round((d[idx["market_cap_basic"]] or 0.0) / 1e9, 3),    # None → 0.0;    # 市值（十亿美元）
         ])
-    compact.sort(key=lambda x: -x[15])
+        if d[idx["market_cap_basic"]] is None or d[idx["price_target_average"]] is None or d[idx["recommendation_mark"]] is None:
+            n_none += 1
+    if n_none:
+        print(f"注意: {n_none} 行含 None 字段 (市值/目标均值/评级分), 已降级处理而非崩溃")
+    compact.sort(key=lambda x: -(x[15] or 0.0))
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     json.dump(
