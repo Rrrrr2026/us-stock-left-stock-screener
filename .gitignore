@@ -31,3 +31,6 @@ tvtarget/data/history_snap/
 tvtarget/data/beat/
 tvtarget/data/screen.json
 !tvtarget/data/screen_seed.json
+
+# 计划任务隐藏运行包装 run_hidden.vbs 的任务日志 (卡 PCHIDE, 2026-10-06): logs/task_YYYYMMDD.log, 本地保留 60 天
+logs/

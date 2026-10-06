@@ -15,7 +15,7 @@ pip install -r requirements.txt
 py -3 run_pipeline.py           # 抓全美股数据 -> 打分 -> 买卖点回测 -> 导出看板 (约10-30分钟)
 # 然后双击打开 dashboard/index.html
 ```
-更新线上数据:双击 `auto_update.bat`(跑完整流水线并推送 docs/ 到 GitHub, Pages 1-2分钟后刷新)。已配置计划任务「美股左侧监控台每日更新」工作日 08:00 自动运行。
+更新线上数据:双击 `auto_update.bat`(跑完整流水线并推送 docs/ 到 GitHub, Pages 1-2分钟后刷新)。已配置计划任务「美股左侧监控台每日更新」工作日 08:00 自动运行。2026-10-06 起该任务**隐藏运行**: Action 是 `wscript.exe run_hidden.vbs` 包装 (无窗口跑 `auto_update.bat auto`, 关不掉也看不见), bat 的屏幕输出进 `logs/task_YYYYMMDD.log` (本地保留 60 天, 不入 git), 退出码原样传回任务的「上次运行结果」; 流水线日志仍在 `data/update.log`。
 
 ## 结构
 - `screener/` — config / datasource(yfinance) / indicators / module1_industry(板块景气) / module2_tech(技术左侧) / module3_fundamentals / module4_crossscore / tradeplan(买卖点回测) / module6_profile(深度档案) / db / export_data
