@@ -295,8 +295,8 @@ def build_payload(run_date: str | None = None) -> dict:
             "news_stats": {k: nh.get(k) for k in ("n", "with_news", "items", "rate", "fetch")},
             "data_date": runlog.get("data_date") or run_date,   # 真实行情数据日期(最新收盘)
             "updated_at": runlog.get("finished_at") or run_date,
-            # 与 A 股看板同名的三个交易日历键。美股没有交易日历 (不引新依赖): last_closed_day / next_open_day 恒为
-            # None, market_status 只在纽约周六日写 'weekend' —— 定义与理由见 screener/runmeta.py。
+            # 与 A 股看板同名的三个交易日历键 (last_closed_day / next_open_day / market_status): 2026-10-12 卡 US-CAL-TRIPLE 起
+            # 由内置 NYSE 日历给出 (10-04..10-11 的老行只有周末那一键) —— 定义与维护点见 screener/runmeta.py。
             "last_closed_day": cal.get("last_closed_day"),
             "next_open_day": cal.get("next_open_day"),
             "market_status": cal.get("market_status"),

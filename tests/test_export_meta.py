@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-看板 meta 的 market_status / 数据源留痕 / 历史清单 data_dates (2026-10-04 卡 A-HOLIDAY) —— 离线, 零联网
-=======================================================================================================
+看板 meta 的交易日历三件套 / 数据源留痕 / 历史清单 data_dates (2026-10-04 卡 A-HOLIDAY; 2026-10-12 卡 US-CAL-TRIPLE) —— 离线, 零联网
+===========================================================================================================================
 美股看板与 A 股看板共用一套「数据新鲜度」判定 (dashboard/index.html 的 FV-FRESH 块, 用例在 test_fresh_banner.py)。
-流水线这一侧, 美股**没有交易日历** (不引新依赖), 所以:
+流水线这一侧:
 
-  ① `screener.runmeta.calendar_fields`: last_closed_day / next_open_day 恒为 None, market_status 只在纽约周六日写
-     'weekend' —— 绝不按工作日近似去填 (近似会把感恩节 / MLK 当开市日, 看板就会误报「数据落后于应到交易日」)。
-  ② `screener.runmeta.run_sources`: 数据源留痕 (页头「数据源」标签从 meta 读)。
-  ③ `export_data.history_data_dates`: history/index.json 的 data_dates {跑批日: 数据日} —— 美股每天早上跑的是
+  ① `screener.runmeta.calendar_fields`: last_closed_day / next_open_day / market_status —— 10-12 起由**内置 NYSE 日历**给出
+     (固定休市表 2025–2028 = stock-core research/data_catalog.py::NYSE_CLOSED 的逐条副本; 之外按 NYSE 十条规则推算 +
+     临时休市表)。市场状态枚举与 A 股一致: open_day | holiday | weekend。纯函数 (时钟注入), 绝不抛。
+     守三件事: 规则 ∪ 临时休市 == 固定表 (逐年); 固定表 == stock-core 那张表 (旁边有检出时); 覆盖年之外三键仍非 None。
+  ② `screener.runmeta.data_date_check`: 跑批算出的 data_date (基准末日) 与日历最后收盘日交叉核对, 只给 WARNING 文案不改值。
+  ③ `screener.runmeta.run_sources`: 数据源留痕 (页头「数据源」标签从 meta 读)。
+  ④ `export_data.history_data_dates`: history/index.json 的 data_dates {跑批日: 数据日} —— 美股每天早上跑的是
      前一个交易日的收盘, 周六 / 周日 / 周一三天跑的都是周五; 日期选择器据此显示数据日。
 外加: db 迁移 (老库补 extra_json 列)、老 run_log 没有 extra 时键照样写出 (None)、run_pipeline 接线契约。
 
@@ -18,10 +21,12 @@
 """
 from __future__ import annotations
 
+import ast
 import datetime as dt
 import json
 import logging
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -38,34 +43,113 @@ from screener.config import CONFIG                              # noqa: E402
 
 UTC = dt.timezone.utc
 CEST = dt.timezone(dt.timedelta(hours=2))
+CET = dt.timezone(dt.timedelta(hours=1))
 NONE3 = {"last_closed_day": None, "next_open_day": None, "market_status": None}
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-# ---------------------------------------------------------------- ① calendar_fields
+# ---------------------------------------------------------------- ① calendar_fields (内置 NYSE 日历)
 
-@pytest.mark.parametrize("now,status", [
-    (dt.datetime(2026, 10, 4, 8, 30, tzinfo=CEST), "weekend"),      # 周日早上的跑批 (纽约周日 02:30)
-    (dt.datetime(2026, 10, 3, 8, 30, tzinfo=CEST), "weekend"),      # 周六
-    (dt.datetime(2026, 10, 5, 8, 30, tzinfo=CEST), None),           # 周一: 开市还是节假日, 没日历判不了
-    (dt.datetime(2026, 11, 26, 8, 30, tzinfo=CEST), None),          # 感恩节 (周四): 同样不猜
-    (dt.datetime(2026, 10, 5, 3, 30, tzinfo=UTC), "weekend"),       # 柏林已是周一 05:30, 纽约仍是周日 23:30
-    (dt.datetime(2026, 10, 3, 3, 30, tzinfo=UTC), None),            # 柏林周六 05:30, 纽约仍是周五 23:30
+@pytest.mark.parametrize("now,exp", [
+    # 每天柏林 08:30 跑批 = 纽约凌晨 02:30 (夏令时) / 03:30 (冬令时): 最后收盘日是前一个开市日
+    (dt.datetime(2026, 10, 4, 8, 30, tzinfo=CEST), ("2026-10-02", "2026-10-05", "weekend")),     # 周日
+    (dt.datetime(2026, 10, 3, 8, 30, tzinfo=CEST), ("2026-10-02", "2026-10-05", "weekend")),     # 周六
+    (dt.datetime(2026, 10, 5, 8, 30, tzinfo=CEST), ("2026-10-02", "2026-10-05", "open_day")),    # 周一: 下一个出新收盘的交易日 = 当天
+    (dt.datetime(2026, 10, 6, 8, 30, tzinfo=CEST), ("2026-10-05", "2026-10-06", "open_day")),    # 周二
+    (dt.datetime(2026, 10, 9, 8, 30, tzinfo=CEST), ("2026-10-08", "2026-10-09", "open_day")),    # 周五
+    (dt.datetime(2026, 10, 12, 8, 30, tzinfo=CEST), ("2026-10-09", "2026-10-12", "open_day")),   # 10-12 周一 (线上此前写的是三个 null)
+    # 纽约 16:00 分界: 15:30 还没收盘 (最后收盘日仍是上周五), 16:30 当天已收盘
+    (dt.datetime(2026, 10, 5, 21, 30, tzinfo=CEST), ("2026-10-02", "2026-10-05", "open_day")),
+    (dt.datetime(2026, 10, 5, 22, 30, tzinfo=CEST), ("2026-10-05", "2026-10-06", "open_day")),
+    # 感恩节 (周四休市) 与次日 (半日市, 仍是交易日)
+    (dt.datetime(2026, 11, 26, 8, 30, tzinfo=CET), ("2026-11-25", "2026-11-27", "holiday")),
+    (dt.datetime(2026, 11, 27, 8, 30, tzinfo=CET), ("2026-11-25", "2026-11-27", "open_day")),
+    # MLK 周一休市 (2027-01-18): 周二跑批拿到的仍是上周五 —— 卡上点名的误报场景
+    (dt.datetime(2027, 1, 18, 8, 30, tzinfo=CET), ("2027-01-15", "2027-01-19", "holiday")),
+    (dt.datetime(2027, 1, 19, 8, 30, tzinfo=CET), ("2027-01-15", "2027-01-19", "open_day")),
+    (dt.datetime(2027, 1, 20, 8, 30, tzinfo=CET), ("2027-01-19", "2027-01-20", "open_day")),
+    # 耶稣受难日 (2026-04-03) 接周末; 独立日落周六 -> 周五 07-03 补休; 圣诞落周六 -> 12-24 补休
+    (dt.datetime(2026, 4, 3, 8, 30, tzinfo=CEST), ("2026-04-02", "2026-04-06", "holiday")),
+    (dt.datetime(2026, 7, 3, 8, 30, tzinfo=CEST), ("2026-07-02", "2026-07-06", "holiday")),
+    (dt.datetime(2027, 12, 24, 8, 30, tzinfo=CET), ("2027-12-23", "2027-12-27", "holiday")),
+    # 2028 元旦落周六不补休: 2027-12-31 (周五) 照常开市
+    (dt.datetime(2027, 12, 31, 8, 30, tzinfo=CET), ("2027-12-30", "2027-12-31", "open_day")),
+    (dt.datetime(2028, 1, 3, 8, 30, tzinfo=CET), ("2027-12-31", "2028-01-03", "open_day")),
+    # 跨日: 柏林已是周一 05:30, 纽约仍是周日 23:30; 柏林周六 05:30, 纽约仍是周五 23:30 (已收盘)
+    (dt.datetime(2026, 10, 5, 3, 30, tzinfo=UTC), ("2026-10-02", "2026-10-05", "weekend")),
+    (dt.datetime(2026, 10, 3, 3, 30, tzinfo=UTC), ("2026-10-02", "2026-10-05", "open_day")),
 ])
-def test_calendar_fields_only_knows_weekends(now, status):
+def test_calendar_fields_from_builtin_nyse_calendar(now, exp):
     got = runmeta.calendar_fields(now)
-    assert got == dict(NONE3, market_status=status), got
+    assert (got["last_closed_day"], got["next_open_day"], got["market_status"]) == exp, got
     assert set(got) == set(runmeta.CALENDAR_KEYS)
+    assert got["market_status"] in ("open_day", "holiday", "weekend")       # 与 A 股 ashare/datadate.py 同一套枚举
 
 
-def test_calendar_fields_never_writes_day_fields_and_never_raises(monkeypatch, caplog):
-    """last_closed_day / next_open_day 恒为 None (没有日历就不近似); 内部炸了也只是三个 None。"""
-    for d in range(1, 15):
-        got = runmeta.calendar_fields(dt.datetime(2026, 10, d, 8, 30, tzinfo=CEST))
-        assert got["last_closed_day"] is None and got["next_open_day"] is None
-    monkeypatch.setattr(runmeta, "ny_date", lambda now=None: (_ for _ in ()).throw(RuntimeError("tz")))
+def test_calendar_fields_never_raises(monkeypatch, caplog):
+    """内部炸了 (时区 / 日历) 只是三个 None + 一行 WARNING, 不能拖垮出榜。"""
+    monkeypatch.setattr(runmeta, "ny_now", lambda now=None: (_ for _ in ()).throw(RuntimeError("tz")))
     with caplog.at_level(logging.WARNING, logger="screener.runmeta"):
         assert runmeta.calendar_fields(dt.datetime(2026, 10, 4, 8, 30, tzinfo=CEST)) == NONE3
-    assert any("market_status 没算出来" in r.getMessage() for r in caplog.records)
+    assert any("交易日历字段没算出来" in r.getMessage() for r in caplog.records)
+    monkeypatch.undo()
+    monkeypatch.setattr(runmeta, "is_open_day", lambda d: (_ for _ in ()).throw(KeyError("cal")))
+    assert runmeta.calendar_fields(dt.datetime(2026, 10, 5, 8, 30, tzinfo=CEST)) == NONE3
+
+
+def test_calendar_fields_writes_null_when_no_open_day_within_look_window(monkeypatch, caplog):
+    """LOOK_DAYS 内找不到开市日 (不该发生): 两个日子写 None + WARNING, 看板回退; 周末 / 工作日状态照写。"""
+    monkeypatch.setattr(runmeta, "is_open_day", lambda d: False)
+    with caplog.at_level(logging.WARNING, logger="screener.runmeta"):
+        got = runmeta.calendar_fields(dt.datetime(2026, 10, 5, 8, 30, tzinfo=CEST))
+    assert got == dict(NONE3, market_status="holiday"), got
+    assert any("找不到开市日" in r.getMessage() for r in caplog.records)
+    assert runmeta.calendar_fields(dt.datetime(2026, 10, 4, 8, 30, tzinfo=CEST))["market_status"] == "weekend"
+
+
+def test_nyse_rules_reproduce_the_fixed_table_year_by_year():
+    """规则 (十条 + observed 挪日) ∪ 临时休市 == 固定表, 2025–2028 逐年 —— 续表 / 改规则时这条先响。"""
+    for y in range(runmeta.NYSE_TABLE_YEARS[0], runmeta.NYSE_TABLE_YEARS[1] + 1):
+        table = {d for d in runmeta.NYSE_CLOSED if d.startswith("%d-" % y)}
+        rules = runmeta.nyse_holidays_by_rule(y) | {d for d in runmeta.NYSE_SPECIAL_CLOSED if d.startswith("%d-" % y)}
+        assert rules == table, (y, sorted(rules ^ table))
+        assert runmeta.nyse_closed_days(y) == table
+        assert 9 <= len(runmeta.nyse_holidays_by_rule(y)) <= 10                 # 元旦落周六那年少一天
+    # 几个有讲究的日子
+    assert "2026-04-03" in runmeta.NYSE_CLOSED and "2028-04-14" in runmeta.NYSE_CLOSED      # Good Friday
+    assert "2026-07-03" in runmeta.NYSE_CLOSED and "2026-07-04" not in runmeta.NYSE_CLOSED  # 独立日落周六 -> 周五
+    assert "2027-07-05" in runmeta.NYSE_CLOSED                                             # 独立日落周日 -> 周一
+    assert "2027-12-24" in runmeta.NYSE_CLOSED and "2027-12-31" not in runmeta.NYSE_CLOSED  # 圣诞挪周五; 元旦落周六不补
+    assert "2025-01-09" in runmeta.NYSE_SPECIAL_CLOSED                                     # 卡特国葬 (规则推不出)
+    assert all(dt.date.fromisoformat(d).weekday() < 5 for d in runmeta.NYSE_CLOSED)       # 表里只登记工作日
+
+
+def test_nyse_rules_keep_working_beyond_the_fixed_table(caplog):
+    """2029+ 没有固定表: 规则照算, 三个字段仍非 None, 日志标「规则推算」提醒年末按维护点核对。"""
+    r29 = runmeta.nyse_holidays_by_rule(2029)
+    assert {"2029-01-01", "2029-01-15", "2029-02-19", "2029-03-30", "2029-05-28", "2029-06-19", "2029-07-04",
+            "2029-09-03", "2029-11-22", "2029-12-25"} == r29, sorted(r29)
+    assert runmeta.nyse_closed_days(2029) == r29
+    assert runmeta.is_open_day(dt.date(2029, 7, 5)) and not runmeta.is_open_day(dt.date(2029, 7, 4))
+    with caplog.at_level(logging.INFO, logger="screener.runmeta"):
+        got = runmeta.calendar_fields(dt.datetime(2029, 7, 4, 8, 30, tzinfo=CEST))
+    assert got == {"last_closed_day": "2029-07-03", "next_open_day": "2029-07-05", "market_status": "holiday"}, got
+    assert any("规则推算" in r.getMessage() for r in caplog.records)
+    assert "2021-06-18" not in runmeta.nyse_holidays_by_rule(2021) and "2022-06-20" in runmeta.nyse_holidays_by_rule(2022)
+
+
+def test_nyse_table_is_a_copy_of_stock_core_table():
+    """两处同表: 旁边有 stock-core 检出 (STOCK_CORE_DIR 或 ../stock-core) 时逐条比对; 没有就 skip。"""
+    core = os.environ.get("STOCK_CORE_DIR") or os.path.join(os.path.dirname(ROOT), "stock-core")
+    path = os.path.join(core, "research", "data_catalog.py")
+    if not os.path.isfile(path):
+        pytest.skip("旁边没有 stock-core 检出: %s" % path)
+    src = open(path, encoding="utf-8").read()
+    m = re.search(r"^NYSE_CLOSED\s*=\s*(\{.*?\})\s*$", src, re.S | re.M)
+    y = re.search(r"^NYSE_YEARS\s*=\s*(\(.*?\))\s*$", src, re.M)
+    assert m and y, "stock-core research/data_catalog.py 里找不到 NYSE_CLOSED / NYSE_YEARS"
+    assert ast.literal_eval(m.group(1)) == runmeta.NYSE_CLOSED
+    assert tuple(ast.literal_eval(y.group(1))) == runmeta.NYSE_TABLE_YEARS
 
 
 def test_ny_date_falls_back_to_fixed_offset_without_tzdata(monkeypatch):
@@ -80,9 +164,24 @@ def test_ny_date_falls_back_to_fixed_offset_without_tzdata(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_zoneinfo)
     assert runmeta.ny_date(dt.datetime(2026, 10, 4, 8, 30, tzinfo=CEST)) == dt.date(2026, 10, 4)
     assert runmeta.ny_date(dt.datetime(2026, 10, 5, 3, 30, tzinfo=UTC)) == dt.date(2026, 10, 4)
+    assert runmeta.calendar_fields(dt.datetime(2026, 10, 5, 8, 30, tzinfo=CEST))["last_closed_day"] == "2026-10-02"
 
 
-# ---------------------------------------------------------------- ② run_sources
+# ---------------------------------------------------------------- ② data_date 交叉核对
+
+def test_data_date_check_only_warns_and_never_changes_anything():
+    cal = {"last_closed_day": "2026-10-09", "next_open_day": "2026-10-12", "market_status": "open_day"}
+    assert runmeta.data_date_check("2026-10-09", cal) is None
+    behind = runmeta.data_date_check("2026-10-08", cal)
+    assert behind and "2026-10-08 早于" in behind and "2026-10-09" in behind
+    ahead = runmeta.data_date_check("2026-10-12", cal)
+    assert ahead and "晚于" in ahead
+    for dd, c in [(None, cal), ("", cal), ("2026-10-09", None), ("2026-10-09", {}), ("2026-10-09", {"last_closed_day": None}),
+                  ("bad", cal), ("2026-10-09", {"last_closed_day": 20261009})]:
+        assert runmeta.data_date_check(dd, c) is None, (dd, c)
+
+
+# ---------------------------------------------------------------- ③ run_sources
 
 def test_run_sources_reflects_universe_mode_and_size():
     saved = dict(CONFIG["source"])
@@ -102,12 +201,12 @@ def test_run_sources_reflects_universe_mode_and_size():
 
 
 def test_run_pipeline_wires_runmeta_into_run_log():
-    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "run_pipeline.py"),
-               encoding="utf-8").read()
+    src = open(os.path.join(ROOT, "run_pipeline.py"), encoding="utf-8").read()
     j = src.index('run_extra = {"calendar": runmeta.calendar_fields(), "sources": runmeta.run_sources(len(universe))}')
+    c = src.index('runmeta.data_date_check(data_date, run_extra["calendar"])')
     k = src.index("data_date=data_date, extra=run_extra)")
     m = src.index("ex.write_dashboard_js(run_date)")
-    assert j < k < m and "from screener import runmeta" in src
+    assert j < c < k < m and "from screener import runmeta" in src
 
 
 # ---------------------------------------------------------------- run_log.extra_json -> export meta
@@ -129,7 +228,7 @@ class _TmpDb:
         return False
 
 
-EXTRA = {"calendar": {"last_closed_day": None, "next_open_day": None, "market_status": "weekend"},
+EXTRA = {"calendar": {"last_closed_day": "2026-10-02", "next_open_day": "2026-10-05", "market_status": "weekend"},
          "sources": {"bars": "yfinance", "valuation": "yfinance", "industry_basis": "GICS",
                      "universe": "nasdaq_screener", "benchmark": "SPY"}}
 
@@ -139,16 +238,21 @@ def _log(run, data, extra=None):
                data_date=data, extra=extra)
 
 
-def test_export_meta_carries_market_status_and_sources():
+def test_export_meta_carries_calendar_triple_and_sources():
     with _TmpDb():
         db.init_db()
         _log("2026-10-04", "2026-10-02", EXTRA)
         meta = ex.build_payload("2026-10-04")["meta"]
         assert (meta["run_date"], meta["data_date"], meta["updated_at"]) == ("2026-10-04", "2026-10-02", "2026-10-04 08:49:09")
-        assert (meta["last_closed_day"], meta["next_open_day"], meta["market_status"]) == (None, None, "weekend")
+        assert (meta["last_closed_day"], meta["next_open_day"], meta["market_status"]) == ("2026-10-02", "2026-10-05", "weekend")
         assert meta["sources"] == EXTRA["sources"]
         snap = json.load(open(ex.write_history_snapshot("2026-10-04"), encoding="utf-8"))
-        assert snap["meta"]["market_status"] == "weekend" and snap["meta"]["sources"]["bars"] == "yfinance"
+        assert snap["meta"]["market_status"] == "weekend" and snap["meta"]["last_closed_day"] == "2026-10-02"
+        assert snap["meta"]["sources"]["bars"] == "yfinance"
+        # 老行 (10-04..10-11 的形态): 日历里只有周末那一键, 另两键 None 照样带出
+        _log("2026-10-11", "2026-10-09", dict(EXTRA, calendar={"last_closed_day": None, "next_open_day": None, "market_status": "weekend"}))
+        meta = ex.build_payload("2026-10-11")["meta"]
+        assert (meta["last_closed_day"], meta["next_open_day"], meta["market_status"]) == (None, None, "weekend")
 
 
 def test_export_meta_keys_present_but_null_without_extra():
@@ -180,7 +284,7 @@ def test_db_migration_adds_extra_json_to_old_run_log():
         assert json.loads(db.fetch_run_log("2026-10-05")["extra_json"]) == EXTRA
 
 
-# ---------------------------------------------------------------- ③ history/index.json 的 data_dates
+# ---------------------------------------------------------------- ④ history/index.json 的 data_dates
 
 def _snap(hist, run, data):
     meta = {"run_date": run}

@@ -23,7 +23,8 @@ data/update.log」。不认交易日历, 还吃浏览器时区: 国庆休市 10-
 
 **本文件「③ 整页渲染」之前的部分 (用例表 / Python 镜像 / 纯函数与 JS 对表) 与 a-share 仓 tests/test_fresh_banner.py
 逐字相同** (只差 MARKET 一行) —— FV-FRESH 块两仓同一份, 判定也就只有一张表; 改表两仓一起改。本仓多出来的是
-美股文案的整页用例: 周末 / 周一休市的周三凌晨 / 跑批停 4 天 / 数据源标签 / 日期显示。
+美股文案的整页用例: 周末 / 周一休市的周三凌晨 / 跑批停 4 天 / 数据源标签 / 日期显示 / 有日历字段后的
+MLK 休市 → 等开市 → 该到没到 → 跑完 (2026-10-12 卡 US-CAL-TRIPLE, 流水线侧 screener/runmeta.py 内置 NYSE 日历)。
 运行: python -X utf8 -m pytest -c ../stock-core/pytest.ini --rootdir . tests/test_fresh_banner.py -q
 """
 from __future__ import annotations
@@ -196,6 +197,20 @@ A_FRI_NOCAL = {"run_date": "2026-10-09", "data_date": "2026-10-09", "updated_at"
 US_SUN = {"run_date": "2026-10-04", "data_date": "2026-10-02", "updated_at": "2026-10-04 08:49:09"}
 US_MON = {"run_date": "2026-10-05", "data_date": "2026-10-02", "updated_at": "2026-10-05 08:49:00"}
 
+
+def us_cal(run, data, lc, no, status):
+    """美股流水线 (us 仓 screener/runmeta.py, 内置 NYSE 日历, 2026-10-12 卡 US-CAL-TRIPLE) 写出日历字段后的 meta: 每天柏林 08:30
+    跑 = 纽约凌晨, last_closed_day = 前一个开市日, next_open_day = 其后的第一个开市日 (工作日跑 = 当天)。"""
+    return {"run_date": run, "data_date": data, "updated_at": run + " 08:49:00",
+            "last_closed_day": lc, "next_open_day": no, "market_status": status}
+
+
+US_CAL_SUN = us_cal("2026-10-04", "2026-10-02", "2026-10-02", "2026-10-05", "weekend")
+US_CAL_MON = us_cal("2026-10-05", "2026-10-02", "2026-10-02", "2026-10-05", "open_day")
+US_CAL_TUE = us_cal("2026-10-06", "2026-10-05", "2026-10-05", "2026-10-06", "open_day")
+US_CAL_MLK_MON = us_cal("2027-01-18", "2027-01-15", "2027-01-15", "2027-01-19", "holiday")
+US_CAL_MLK_TUE = us_cal("2027-01-19", "2027-01-15", "2027-01-15", "2027-01-19", "open_day")
+
 # (名字, 市场, meta, now, 期望 {level, code, why, mode, ...可选字段})
 CASES = [
     # ---- 长假中, 跑批新鲜 / 数据旧 -> 中性条 (回退模式 = 今晚只发页面时的形态) ----
@@ -264,7 +279,7 @@ CASES = [
      dict(level="info", code="closed", why="weekend", nextOpen=None)),
     ("a_garbage_calendar_types_fall_back", "a", dict(A_1002, last_closed_day=20260930, next_open_day="soon"),
      T("2026-10-04T16:30:00+02:00"), dict(level="info", code="closed", why="no_new_day", mode="fallback")),
-    # ---- 美股 (次日早上跑批, 每天跑; 无日历 -> 只有回退模式) ----
+    # ---- 美股, 没有日历字段 (10-12 卡 US-CAL-TRIPLE 之前的老 meta; 次日早上跑批, 每天跑 -> 回退模式) ----
     ("us_weekend_sunday", "us", US_SUN, T("2026-10-04T16:30:00+02:00"), dict(level="info", code="closed", why="weekend", mode="fallback", ageDays=0)),
     ("us_saturday_run", "us", {"run_date": "2026-10-03", "data_date": "2026-10-02", "updated_at": "2026-10-03 08:49:00"},
      T("2026-10-03T12:00:00+02:00"), dict(level="info", code="closed", why="weekend")),
@@ -276,6 +291,21 @@ CASES = [
     ("us_monday_holiday_wednesday_dawn", "us", {"run_date": "2027-01-19", "data_date": "2027-01-15", "updated_at": "2027-01-19 08:49:00"},
      T("2027-01-20T01:00:00+01:00"), dict(level="info", code="closed", why="no_new_day", ageDays=1)),
     ("us_run_stopped_4d", "us", US_SUN, T("2026-10-08T09:00:00+02:00"), dict(level="alert", code="run_stale", ageDays=4)),
+    # ---- 美股, 有日历字段 (lagDays 1: 交易日 D 的收盘在 D+1 柏林早上出数, 所以「该到没到」要过了 D+1 才算) ----
+    ("us_cal_weekend_sunday", "us", US_CAL_SUN, T("2026-10-04T16:30:00+02:00"),
+     dict(level="info", code="closed", why="weekend", mode="calendar", nextOpen="2026-10-05")),
+    ("us_cal_monday_session_await", "us", US_CAL_MON, T("2026-10-05T16:00:00+02:00"), dict(level="info", code="await", nextOpen="2026-10-05")),
+    ("us_cal_tuesday_after_batch_ok", "us", US_CAL_TUE, T("2026-10-06T12:00:00+02:00"), dict(level="none", code="ok", mode="calendar")),
+    ("us_cal_wednesday_dawn_before_batch_ok", "us", US_CAL_TUE, T("2026-10-07T01:00:00+02:00"), dict(level="none", code="ok")),
+    ("us_cal_wednesday_2359_batch_late_still_ok", "us", US_CAL_TUE, T("2026-10-07T23:59:00+02:00"), dict(level="none", code="ok")),
+    ("us_cal_batch_missed_thursday_overdue", "us", US_CAL_TUE, T("2026-10-08T00:00:30+02:00"),
+     dict(level="alert", code="data_overdue", expectDay="2026-10-06", ageDays=2)),
+    ("us_cal_data_behind_at_batch_time", "us", us_cal("2026-10-06", "2026-10-02", "2026-10-05", "2026-10-06", "open_day"),
+     T("2026-10-06T12:00:00+02:00"), dict(level="alert", code="data_behind", expectDay="2026-10-05")),
+    ("us_cal_mlk_monday_holiday", "us", US_CAL_MLK_MON, T("2027-01-18T16:00:00+01:00"),
+     dict(level="info", code="closed", why="holiday", nextOpen="2027-01-19")),
+    ("us_cal_mlk_wednesday_dawn_await_not_red", "us", US_CAL_MLK_TUE, T("2027-01-20T01:00:00+01:00"),
+     dict(level="info", code="await", nextOpen="2027-01-19", ageDays=1)),
 ]
 
 LIVE_A = {"run_date": "2026-10-02", "data_date": "2026-09-30"}
@@ -380,6 +410,13 @@ def test_page_contract_old_logic_gone_and_config_matches():
 class _Quiet(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a):                                 # noqa: D401 —— 用例输出里不要访问日志
         pass
+
+
+class _Server(http.server.ThreadingHTTPServer):
+    # socketserver 默认 listen backlog 只有 5: 页面一口气并发拉十来个脚本, 机器忙 (全套用例 / 别的任务同时在跑) 时
+    # 会有连接被拒 -> 某个数据脚本没加载 -> 页面按「没有数据」渲染, 用例无关地变红 (整套跑时实测撞到过一次)。
+    request_queue_size = 64
+    daemon_threads = True
 
 
 @pytest.fixture(scope="module")
@@ -488,7 +525,7 @@ def _write_site(root, meta, dates=HIST_DATES, data_dates=None, ql_date="2026-10-
 def site(tmp_path):
     root = tmp_path / "site"
     root.mkdir()
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_Quiet, directory=str(root)))
+    srv = _Server(("127.0.0.1", 0), functools.partial(_Quiet, directory=str(root)))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield {"root": str(root), "base": "http://127.0.0.1:%d" % srv.server_address[1]}
     srv.shutdown()
@@ -515,6 +552,19 @@ READY = ("() => { const s = document.querySelector('#dateSel'), q = document.que
          "document.querySelector('#ovMini').textContent.length > 0; }")
 
 
+LOADED = "() => !!(window.__ASHARE__ && window.__ASHARE__.meta && window.__QL__ && window.__BT__ && window.LS)"
+
+
+def _goto_loaded(page, base):
+    """打开页面并核对夹具的数据脚本与共用脚本都真的加载了; 本地服务偶发拒连就重开 (最多 3 次)。
+    这是在保证**夹具**到位, 不是在给页面逻辑兜底: 加载齐了之后的判定一次定论, 不重试。"""
+    for _ in range(3):
+        page.goto(base + "/index.html")
+        if page.evaluate(LOADED):
+            return
+    raise AssertionError("夹具站点的数据脚本三次都没加载齐 (本地 http.server 拒连?)")
+
+
 def _open(browser, site, now, tz="Europe/Berlin", w=1280, h=800, lang="zh"):
     mobile = w < 960
     ctx = browser.new_context(viewport={"width": w, "height": h}, timezone_id=tz, is_mobile=mobile, has_touch=mobile,
@@ -527,7 +577,7 @@ def _open(browser, site, now, tz="Europe/Berlin", w=1280, h=800, lang="zh"):
     errs: list[str] = []
     page.on("pageerror", lambda e: errs.append(str(e)))
     page.clock.set_fixed_time(now)
-    page.goto(base + "/index.html")
+    _goto_loaded(page, base)
     page.wait_for_function(READY, timeout=20000)
     page.wait_for_timeout(120)
     return ctx, page, errs
@@ -636,3 +686,28 @@ def test_page_dates_show_data_day_once_index_has_data_dates(browser, site):
     ctx.close()
     assert not errs, errs
     assert h["hidden"] is True and h["level"] == "none" and h["hist"].startswith("📅 正在查看历史快照 2026-10-02 "), h
+
+
+def test_page_calendar_fields_holiday_then_await_then_overdue_then_ok(browser, site):
+    """流水线写了日历字段之后 (2026-10-12 卡 US-CAL-TRIPLE): MLK 周一休市带下一交易日 -> 周二开市等跑批 -> 周二 / 周三的批都没跑,
+    周四零点 (柏林) 该到没到变红 -> 周三跑完 (拿到周二收盘) 不显示。文案与 A 股同形, 市场名换「美股」, 日历模式。"""
+    _write_site(site["root"], dict(US_CAL_MLK_MON), dates=["2027-01-18", "2027-01-17", "2027-01-16"])
+    seq = [("2027-01-18T16:00:00+01:00", "info", "closed:holiday",
+            "⏸️ 美股休市中· 下一交易日 01-19（周二）· 当前为 2027-01-15 收盘· 最近一次跑批 01-18 08:49"),
+           ("2027-01-19T08:00:00+01:00", "info", "await",
+            "⏳ 美股 01-19（周二）开市· 新数据待收盘后跑批更新· 当前为 2027-01-15 收盘· 最近一次跑批 01-18 08:49"),
+           ("2027-01-21T00:00:30+01:00", "alert", "data_overdue",
+            "⚠️ 数据落后于应到交易日 2027-01-19（当前为 2027-01-15 收盘 · 最近一次跑批 01-18 08:49） —— 请查看 /data/ 数据总览")]
+    for now, level, code, text in seq:
+        ctx, page, errs = _open(browser, site, T(now))
+        r = page.evaluate(READ)
+        ctx.close()
+        assert not errs, errs
+        assert (r["level"], r["code"], r["mode"], r["text"]) == (level, code, "calendar", text), (now, r)
+        assert r["link"] == ("https://fairvalpha.com/data/" if level == "alert" else None), (now, r)
+    _write_site(site["root"], us_cal("2027-01-20", "2027-01-19", "2027-01-19", "2027-01-20", "open_day"),
+                dates=["2027-01-20", "2027-01-19", "2027-01-18"])
+    ctx, page, errs = _open(browser, site, T("2027-01-20T12:00:00+01:00"))
+    r = page.evaluate(READ)
+    ctx.close()
+    assert not errs and (r["hidden"], r["level"], r["code"], r["mode"]) == (True, "none", "ok", "calendar"), r
