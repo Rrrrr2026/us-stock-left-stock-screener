@@ -57,6 +57,11 @@ class Market:
     # 里个股 10:01 就入库了, 指数却要等跑完 (11:19 的 ingest) 才补, 中间跑的流水线拿指数末日 09-11 当
     # 了 data_date。尽力而为: 返回 None = 未启用 / 源尚无当日 bar, pricestore 只 warning 不停下。
     fetch_index_by_date: Optional[Callable[[str], tuple]] = None        # (d) -> (o,h,l,c,v) v=手; None=未到
+    # 改名 / ST 点时史**全表** (2026-10-24 卡 UNIVERSE-RULES-2): `pricestore update` 收尾时距上次拉取 >= 30 天自动拉一次并
+    # 只追加新行 (pricestore._refresh_namechange_if_due, meta namechange_pulled_at)。约定: 返回 None = 未启用 (源不指向
+    # Tushare / 无 token) -> 核心静默跳过; [] = 启用了但源返回空 -> 核心警告、不写拉取日 (明天再试); 抛错 -> 非致命, 记一行。
+    # 没有这个钩子的市场 (美股) 自然跳过。
+    fetch_namechange_rows: Optional[Callable[[], list]] = None          # () -> [(code,name,start_date,end_date,ann_date,change_reason)]
     log_prefix: str = "leftside_core"
 
 
