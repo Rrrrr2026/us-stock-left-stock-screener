@@ -171,12 +171,15 @@ def normalize_universe_rows(rows) -> list:
 # ------------------------------------------------------------------ meta
 
 
-def meta_set(pairs: dict, conn: sqlite3.Connection | None = None) -> None:
+def meta_set(pairs: dict, conn: sqlite3.Connection | None = None, commit: bool = True) -> None:
+    """写 meta 键值 (INSERT OR REPLACE)。commit=False 只在传入 conn 时有效: 留给调用方把几步写入并成一个事务 (改名表月刷 =
+    行入表 + 刷后重钉 + 守卫钉 + 拉取日 一次 commit, 中途失败一次 rollback; 2026-10-25 卡 UNIVERSE-RULES-4); 自建连接一律 commit。"""
     own = conn is None
     conn = conn or _conn()
     conn.executemany("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",
                      [(str(k), "" if v is None else str(v)) for k, v in pairs.items()])
-    conn.commit()
+    if commit or own:
+        conn.commit()
     if own:
         conn.close()
 
@@ -460,6 +463,7 @@ NAMECHANGE_PULLED_KEY = "namechange_pulled_at"            # meta: 改名表最�
 NAMECHANGE_REFRESH_DAYS = 30                              # 距上次拉取 >= 这么多天, update 收尾自动拉一次
 CURNAME_PINS_KEY = "pit_curname_pins"                     # meta: {code: [[since, until|null], ...]} 当前名剔除起点 (钉住)
 GUARD_PINS_KEY = "pit_guard_pins"                         # meta: {code: [[a, b], ...]} 单调守卫补的钉 (刷新放行过的历史段, 永久剔)
+NAMECHANGE_TRIED_KEY = "namechange_pull_tried_on"         # meta: 月刷最近一次**尝试**拉取的日子 —— 失败日最多试 1 次 (2026-10-25 卡 UNIVERSE-RULES-4, GM 定)
 _ST_CACHE: dict = {}
 _UNI_MAP_CACHE: dict = {}
 _NO_TL = (("0000-00-00", False),)
@@ -541,7 +545,8 @@ def st_timeline_from_rows(rows, cur_name, listed: bool, coverage_end: str | None
       · 行说 ST 而当前名清洁 (缺摘帽行, pit_unresolved 第三组) -> **不接当前名段**, 最后一段 ST 延续到底, 刷新补到撤销行为止
         (老板 ③「宁可漏掉不错买」; 09-26 版是覆盖末日次日起回池);
       · 行说清洁 / 无行而当前名带 ST/退 (第一/二组) -> 有钉住的开口段就按钉住的起点剔 (刷新不后移), 没钉住才按旧规则
-        「覆盖末日次日起按当前名」(今天一定对, 但改名日期不知道, 所以不回溯)。
+        「覆盖末日次日起按当前名」(今天一定对, 但改名日期不知道, 所以不回溯)。钉的起点 = min(覆盖末日次日, 观察日), 永不在未来
+        (覆盖末日可以是「公告在先、生效在后」的未来日子; 2026-10-25 卡 UNIVERSE-RULES-4); 未钉住只发生在没跑过 update 的研究副本上。
     钉住的段 [since, until) 一律压成剔除 (我们自己的观察: 当前名在这段时间带 ST/退), 行上落在段内的证据不采 (2026 年行
     的理由本就不可靠), 段后照行; until None = 开口到底。退市票不做当前名这一步 (它的当前名是退市整理期的名字, 那一段由
     终止上市 行给出), 但钉住的段照压 (退市日之后的 bar 本就不在池)。
@@ -1436,11 +1441,15 @@ def _refresh_universe(m, conn: sqlite3.Connection) -> int:
     return len(rows)
 
 
-def _maintain_curname_pins(conn: sqlite3.Connection, today=None) -> dict:
+def _maintain_curname_pins(conn: sqlite3.Connection, today=None, commit: bool = True) -> dict:
     """钉住「当前名剔除起点」(2026-10-24 卡 UNIVERSE-RULES-2; 校验员 MEDIUM「月刷会把今日 ST 票已剔的 bar 回溯放行」)。
 
-    在市票当前名带 ST/退 而行上没有证据 (pit_unresolved 第一/二组): 首次发现就记一段开口的钉 [since, None], since = 此刻
-    覆盖末日的次日 (今 2026-09-09) —— 之后改名表再刷新、覆盖末日再前移, 这个起点**不动** (只会往前, 不会往后)。
+    在市票当前名带 ST/退 而行上没有证据 (pit_unresolved 第一/二组): 首次发现就记一段开口的钉 [since, None], since = min(此刻
+    覆盖末日的次日, 今天) (今 2026-09-09) —— 之后改名表再刷新、覆盖末日再前移, 这个起点**不动** (只会往前, 不会往后)。**起点永不在
+    未来** (2026-10-25 卡 UNIVERSE-RULES-4, 校验员 verify:UNIVERSE-RULES-3 MEDIUM): 月刷常拉到「公告在先、生效在后」的行 (真表按 ann_date
+    回推, 64% 的拉取日覆盖末日落在拉取日之后, 中位 1 天、最多 15 天), 原版钉在覆盖末日次日 = 未来, 刷成第二组的一致 ST 票 / 月刷后日更
+    新发现的 ST 名票在 (今天, 覆盖末日] 的 bar 可买, 之后日更也不补 —— 现在覆盖末日 >= 今天就钉在今天 (今天观察到的名字, 今天的 bar 就剔;
+    之前无证据不回溯)。
     已钉住的票以后: 行上补到了戴帽行 (行的最终状态 == 当前名 ST) -> **只有行上那段剔除的起点 <= 钉住起点** (行证据盖住整段钉,
     撤了不放行任何 bar) 才撤钉、起点交给行; 行日期晚于钉住起点的钉不动 (段内行证据不采, [起点, 行日期) 不放行 —— 2026-10-25
     卡 UNIVERSE-RULES-3 收紧, 校验员 C2); 名字清洁了 (摘帽 / 改名) -> 封口 until = 今天 (观察到清洁的日子), [since, until) 永久按
@@ -1449,7 +1458,8 @@ def _maintain_curname_pins(conn: sqlite3.Connection, today=None) -> dict:
     namechange 表空 (无覆盖末日) 不钉 (无从取起点, 也没有月刷)。
     每日 update 收尾与月刷之后各跑一次 (先钉再刷: 刷新带来的新行可能把覆盖末日推前, 先钉住才不会让起点跟着跑; 刷后重钉的
     新开口钉落在新覆盖末日次日, 它之前被刷新放行的那段由 _pit_monotone_guard 补守卫钉压回)。
-    -> {"new": [...], "dropped": [...], "closed": [...]}; 有变动才写 meta `pit_curname_pins` 并 commit。
+    -> {"new": [...], "dropped": [...], "closed": [...]}; 有变动才写 meta `pit_curname_pins` 并 commit (commit=False 只写不 commit,
+    月刷事务里由调用方一次 commit / rollback)。
     """
     today_s = _iso_day(today) if today else dt.date.today().isoformat()
     rows, cov, _n = _st_rows(conn)
@@ -1457,7 +1467,7 @@ def _maintain_curname_pins(conn: sqlite3.Connection, today=None) -> dict:
     if cov is None:
         return res
     pins = _curname_pins(conn)
-    since_default = _next_day(cov)
+    since_default = min(_next_day(cov), today_s)      # 起点永不在未来: 覆盖末日 >= 今天 -> 钉在今天 (卡 UNIVERSE-RULES-4)
     changed = False
     kept: list = []
     for code, name, dd in conn.execute("SELECT code, name, delist_date FROM universe"):
@@ -1496,7 +1506,7 @@ def _maintain_curname_pins(conn: sqlite3.Connection, today=None) -> dict:
             pins.pop(code, None)
     if changed:
         meta_set({CURNAME_PINS_KEY: json.dumps(pins, ensure_ascii=False, sort_keys=True,
-                                               separators=(",", ":"))}, conn)
+                                               separators=(",", ":"))}, conn, commit=commit)
         _ST_CACHE.clear()
         log.info("点时钉住 (当前名剔除起点): 新钉 %d 只 @%s (%s) / 撤钉 %d (%s) / 封口 %d @%s (%s); 现有钉 %d 只%s",
                  len(res["new"]), since_default, " ".join(res["new"][:12]), len(res["dropped"]),
@@ -1545,17 +1555,23 @@ def _refresh_namechange_if_due(m, conn: sqlite3.Connection, today=None,
     两个都没有 = 从未拉过 -> 立刻到期 (生产库 09-07 重建后从没刷过, 上线后的第一次 update 就会拉)。**不写 namechange_asof**:
     那是「覆盖末日」(当前名生效边界) 的语义, 月刷不动它 (钉住的起点另见 _maintain_curname_pins)。
     钩子不存在 (美股 / 老 Market: `getattr` 容错, 旧 a-share 配新核心、新 a-share 配旧核心都不崩) -> None, 一行日志都不打; 钩子返回
-    None (未启用) -> 跳过不警告; 返回空 / 抛错 -> warning, 不写拉取日, **不影响行情入库** —— 注意不写拉取日意味着同一次运行的就绪
-    等待循环每轮 update 都会再试 (run_a.sh / auto_update.bat 最多 6 轮), 之后每次 update 再试, 直到拉成功 (不是每天 1 次)。
+    None (未启用) -> 跳过不警告; 返回空 / 抛错 -> warning, 不写拉取日, **不影响行情入库**。
+    **失败日最多试 1 次** (2026-10-25 卡 UNIVERSE-RULES-4, GM 定): 拉之前先写 meta `namechange_pull_tried_on` = 今天, 同一天再进
+    update (就绪等待循环每轮都会进来, run_a.sh / auto_update.bat 最多 6 轮) 看到戳就只打一行 INFO 不再拉, 明天的 update 再试;
+    force 不看戳 (人工强刷)。
     行入表之后 (2026-10-25 卡 UNIVERSE-RULES-3): 刷后重钉 (_maintain_curname_pins) -> 点时单调守卫 (_pit_monotone_guard: 观察日及
     之前由剔除变可买的 bar 一律用守卫钉压回) -> **硬断言 剔除→可买 = 0 根**, 通过才写拉取日; 不通过 = 守卫有缺陷 -> 本次刷新
-    回滚 (删掉新增的行, 两个钉 meta 恢复原文, 不写拉取日), ERROR 一行。
+    回滚, ERROR 一行。**入表 → 重钉 → 守卫 → 写拉取日 是一个事务** (卡 UNIVERSE-RULES-4, 校验员 verify:UNIVERSE-RULES-3 LOW 1a:
+    原版行入表就 commit, 守卫阶段抛错 (库锁 / 进程被杀) 行留在表里而拉取日没写, 下一次 update 的刷新前快照已含这些行, 守卫看不到
+    变化就写拉取日, 放行永久化): 这几步里任何异常都先走 _rollback_namechange_refresh (rollback + 兜底删新行 / 钉 meta 恢复原文)
+    再往外抛 (调用方 _after_universe_refresh 记一行 warning); 进程被杀则事务没 commit, SQLite 自己回滚。
     -> None (无钩子) / {"due": False, "last", "age_days"} / {"due": True, "ok": False, ...} / {"due": True, "ok": True, "added", "rows", "guard", ...}
     """
     fn = getattr(m, "fetch_namechange_rows", None)
     if fn is None:
         return None
     today_d = dt.date.fromisoformat(_iso_day(today)) if today else dt.date.today()
+    today_s = today_d.isoformat()
     try:
         meta = meta_all(conn)
     except sqlite3.Error:
@@ -1568,57 +1584,70 @@ def _refresh_namechange_if_due(m, conn: sqlite3.Connection, today=None,
             age = None
         if age is not None and age < min_days:
             return {"due": False, "last": last, "age_days": age}
+    tried = norm_date(meta.get(NAMECHANGE_TRIED_KEY))
+    if tried == today_s and not force:
+        log.info("namechange 月刷: 今天 %s 已试过一次 (meta %s), 本次 update 不再拉, 明天的 update 再试 (上次拉取 %s)",
+                 today_s, NAMECHANGE_TRIED_KEY, last or "从未")
+        return {"due": True, "ok": False, "skipped": "tried_today", "last": last, "tried_on": tried}
+    meta_set({NAMECHANGE_TRIED_KEY: today_s}, conn)      # 先盖戳再拉: 拉挂 / 回包空 / 硬断言失败 / 进程被杀, 同日都不再试
     try:
         rows = fn()
     except Exception as e:                   # noqa: BLE001  (改名表拉挂不能拖垮行情增量)
-        log.warning("namechange 月刷: 拉取失败 (非致命, 不写拉取日, 下次 update 再试; 上次拉取 %s): %s",
+        log.warning("namechange 月刷: 拉取失败 (非致命, 不写拉取日, 今天不再试, 明天的 update 再试; 上次拉取 %s): %s",
                     last or "从未", str(e)[:160])
         return {"due": True, "ok": False, "error": str(e)[:160], "last": last}
     if rows is None:                         # 钩子说未启用 (源不指向 Tushare / 无 token)
         return {"due": True, "ok": False, "skipped": "hook_disabled", "last": last}
     rows = normalize_namechange_rows(rows)
     if not rows:
-        log.warning("namechange 月刷: 源返回空 (非致命, 不写拉取日, 下次 update 再试; 上次拉取 %s)", last or "从未")
+        log.warning("namechange 月刷: 源返回空 (非致命, 不写拉取日, 今天不再试, 明天的 update 再试; 上次拉取 %s)", last or "从未")
         return {"due": True, "ok": False, "error": "empty", "last": last}
-    # ---- 刷新前快照 (点时单调守卫的基准): 全部代码的时间线 (含现有钉)、行键集、两个钉 meta 的原文 (硬断言失败时原样恢复)
+    # ---- 刷新前快照 (点时单调守卫的基准): 全部代码的时间线 (含现有钉)、行键集、两个钉 meta 的原文 (回滚时原样恢复)
     tl_before = _st_tables(conn, refresh=True)
     keys_before = set(conn.execute("SELECT code, start_date, name FROM namechange"))
     pins_raw_before = {k: meta.get(k) for k in (CURNAME_PINS_KEY, GUARD_PINS_KEY)}
     before = len(keys_before)
-    conn.executemany("INSERT OR IGNORE INTO namechange(code,name,start_date,end_date,ann_date,change_reason) "
-                     "VALUES(?,?,?,?,?,?)", rows)
-    after = conn.execute("SELECT COUNT(*) FROM namechange").fetchone()[0] or 0
-    mx = conn.execute("SELECT MAX(start_date) FROM namechange").fetchone()[0]
-    conn.commit()
-    _ST_CACHE.clear()
-    _maintain_curname_pins(conn, today_d)              # 刷后重钉: 刷新让一致票变成第一/二组的, 先给它开口钉 (起点 = 新覆盖末日次日)
-    g = _pit_monotone_guard(conn, tl_before, today_d)  # 再把刷新 (含重钉) 放行的历史段压回 + 硬断言
-    if g["released_bars"] or g["residual"]:
+    conn.commit()                            # 事务边界: 调用方挂着的写入先落盘; 下面「入表 → 重钉 → 守卫 → 写拉取日」是一个事务
+    try:
+        conn.executemany("INSERT OR IGNORE INTO namechange(code,name,start_date,end_date,ann_date,change_reason) "
+                         "VALUES(?,?,?,?,?,?)", rows)
+        after = conn.execute("SELECT COUNT(*) FROM namechange").fetchone()[0] or 0
+        mx = conn.execute("SELECT MAX(start_date) FROM namechange").fetchone()[0]
+        _ST_CACHE.clear()
+        _maintain_curname_pins(conn, today_d, commit=False)          # 刷后重钉: 刷新让一致票变成第一/二组的, 先给它开口钉 (起点 = min(新覆盖末日次日, 今天))
+        g = _pit_monotone_guard(conn, tl_before, today_d, commit=False)  # 再把刷新 (含重钉) 放行的历史段压回 + 硬断言
+        if g["released_bars"] or g["residual"]:
+            n_del = _rollback_namechange_refresh(conn, keys_before, pins_raw_before)
+            log.error("namechange 月刷 硬断言失败: 守卫补钉后仍有 %d 根 bar / %d 段 (%s) 由剔除变为可买 —— 本次刷新已回滚 "
+                      "(撤掉新增 %d 行, 两个钉 meta 恢复原文), 不写拉取日, 今天不再试、明天的 update 再试; 这是代码缺陷, 需要人看, 别手工强刷",
+                      g["released_bars"], sum(len(v) for v in g["residual"].values()),
+                      " ".join(sorted(g["residual"])[:12]), n_del)
+            return {"due": True, "ok": False, "error": "monotone_guard", "released_bars": g["released_bars"],
+                    "residual": g["residual"], "rolled_back_rows": n_del, "last": last}
+        u = pit_unresolved(conn)
+        unres = f"{len(u['no_history'])}/{len(u['history_clean_now_st'])}/{len(u['history_st_now_clean'])}"
+        n_segs = sum(len(v) for v in g["pinned"].values())
+        meta_set({NAMECHANGE_PULLED_KEY: today_s, "namechange_pull_rows": str(len(rows)),
+                  "namechange_pull_added": str(after - before), "namechange_pull_unresolved": unres,
+                  "namechange_pull_guard": f"{g['blocked_bars']}/{len(g['pinned'])}"}, conn)   # 这一笔 commit 整个事务
+    except Exception:
         n_del = _rollback_namechange_refresh(conn, keys_before, pins_raw_before)
-        log.error("namechange 月刷 硬断言失败: 守卫补钉后仍有 %d 根 bar / %d 段 (%s) 由剔除变为可买 —— 本次刷新已回滚 "
-                  "(删掉新增 %d 行, 两个钉 meta 恢复原文), 不写拉取日, 下次 update 再试; 这是代码缺陷, 需要人看, 别手工强刷",
-                  g["released_bars"], sum(len(v) for v in g["residual"].values()),
-                  " ".join(sorted(g["residual"])[:12]), n_del)
-        return {"due": True, "ok": False, "error": "monotone_guard", "released_bars": g["released_bars"],
-                "residual": g["residual"], "rolled_back_rows": n_del, "last": last}
-    u = pit_unresolved(conn)
-    unres = f"{len(u['no_history'])}/{len(u['history_clean_now_st'])}/{len(u['history_st_now_clean'])}"
-    n_segs = sum(len(v) for v in g["pinned"].values())
-    meta_set({NAMECHANGE_PULLED_KEY: today_d.isoformat(), "namechange_pull_rows": str(len(rows)),
-              "namechange_pull_added": str(after - before), "namechange_pull_unresolved": unres,
-              "namechange_pull_guard": f"{g['blocked_bars']}/{len(g['pinned'])}"}, conn)
+        log.error("namechange 月刷: 入表 / 刷后重钉 / 守卫 / 写拉取日阶段出错 —— 本次刷新已回滚 (撤掉新增 %d 行, 两个钉 meta 恢复原文), "
+                  "不写拉取日, 今天不再试、明天的 update 再试; 原始异常随后抛出", n_del)
+        raise
+    outside = g.get("outside_universe") or []
     log.info("namechange 月刷: 源返回 %d 条 (%d 只), 新增 %d 行 (表内 %d 行, 最大 start_date %s); "
              "namechange_pulled_at=%s (上次 %s); pit_unresolved 无改名史 / 最后一行相反 / 仍 ST 今清洁 = %s",
-             len(rows), len({r[0] for r in rows}), after - before, after, mx, today_d.isoformat(),
+             len(rows), len({r[0] for r in rows}), after - before, after, mx, today_s,
              last or "从未", unres)
     log.info("点时单调守卫 (刷新前后, %s 及之前的 bar): 剔除→可买 %d 根 (硬断言 = 0 ✓); 守卫补钉 %d 只 / %d 段, 挡住 %d 根 (%s); "
-             "可买→剔除 %d 根 / %d 只 (%s); 时间线有变 %d 只",
+             "可买→剔除 %d 根 / %d 只 (%s); 时间线有变 %d 只%s",
              g["today"], g["released_bars"], len(g["pinned"]), n_segs, g["blocked_bars"],
              " ".join("%s[%s,%s)" % (c, s[0], s[1]) for c in sorted(g["pinned"])[:8] for s in g["pinned"][c]),
-             g["added_bars"], len(g["added_codes"]), " ".join(g["added_codes"][:12]), g["changed"])
+             g["added_bars"], len(g["added_codes"]), " ".join(g["added_codes"][:12]), g["changed"],
+             ("; 不在 universe 的码时间线有变 %d 只 (%s), 不进 pit_mask 不计入" % (len(outside), " ".join(outside[:8]))) if outside else "")
     return {"due": True, "ok": True, "rows": len(rows), "added": after - before, "total": after,
-            "max_start": mx, "pulled_at": today_d.isoformat(), "last": last, "unresolved": unres, "guard": g}
-
+            "max_start": mx, "pulled_at": today_s, "last": last, "unresolved": unres, "guard": g}
 
 def _release_intervals(tl_old, tl_new, cutoff: str) -> list:
     """旧时间线剔除而新时间线不剔的日期区间 [(a, b), ...] (b 为开区间端点; 只看 cutoff 之前的日子, 越过 cutoff 的截到 cutoff;
@@ -1661,7 +1690,7 @@ def _merge_segments(segs) -> list:
     return out
 
 
-def _pit_monotone_guard(conn: sqlite3.Connection, tl_before: dict, today=None) -> dict:
+def _pit_monotone_guard(conn: sqlite3.Connection, tl_before: dict, today=None, commit: bool = True) -> dict:
     """点时单调守卫 (2026-10-25 卡 UNIVERSE-RULES-3; 校验员 MEDIUM「刷新只增不减剔除不成立」+ GM「刷新只能增加剔除、永不放行已剔的 bar」)。
 
     tl_before = 刷新前 `_st_tables(conn, refresh=True)` 的快照 (含当时的钉)。现在逐码与刷新 (+ 刷后重钉) 之后的时间线比:
@@ -1669,19 +1698,26 @@ def _pit_monotone_guard(conn: sqlite3.Connection, tl_before: dict, today=None) -
     _st_tables 把它与当前名钉一起压成剔除 —— 等价于每只票取 旧掩码 ∪ 新掩码; 观察日之后的 bar 才按新证据 (今天的名字 + 新行)。
     补钉后再比一遍 = **硬断言**: 残余的 剔除→可买 区间与 bar 数都必须为 0 (bar 数按 bars_raw 里 <= today 的真 bar 逐根数,
     只数时间线有变的码)。调用方 (_refresh_namechange_if_due) 据此决定写拉取日还是回滚。
+    **只比 universe 内的码** (2026-10-25 卡 UNIVERSE-RULES-4, 校验员 verify:UNIVERSE-RULES-3 LOW 1b): 有改名史但不在 universe 的老代码
+    _st_tables 不给套钉 (它们从不进 pit_mask / universe_at), 原版把它们也算进来 -> 守卫钉压不回 -> 残余 != 0 -> 每次 update 都回滚,
+    月刷永久卡死; 现在这类码只记进 "outside_universe" 让日志点名, 不计入硬断言。
+    commit=False: 守卫钉只写不 commit (月刷事务里由调用方一次 commit / rollback)。
     -> {"today", "released_bars" (补钉后仍放行的 bar 数, 应 0), "residual" {code: [[a,b],...]} (应 {}), "blocked_bars" (没有守卫
         会被放行的 bar 数), "pinned" {code: [[a,b],...]} (本次补的守卫钉), "added_bars" / "added_codes" (可买→剔除, 允许的方向),
-        "changed" (时间线有变的码数)}。"""
+        "changed" (universe 内时间线有变的码数), "outside_universe" [code, ...] (不在 universe 而时间线有变的码, 不计入)}。"""
     today_s = _iso_day(today) if today else dt.date.today().isoformat()
     cutoff = _next_day(today_s)
     tl_after = _st_tables(conn, refresh=True)
+    uni = {r[0] for r in conn.execute("SELECT code FROM universe")}
     codes = set(tl_before) | set(tl_after)
 
     def flips(code, tl_a, tl_b) -> int:          # code 在 today 及之前的真 bar 里, tl_a 剔而 tl_b 不剔的根数
         ds = [r[0] for r in conn.execute("SELECT d FROM bars_raw WHERE code=? AND d<=?", (code, today_s))]
         return sum(1 for d in ds if _excluded_at(tl_a, d) and not _excluded_at(tl_b, d))
 
-    changed = sorted(c for c in codes if list(tl_before.get(c) or _NO_TL) != list(tl_after.get(c) or _NO_TL))
+    changed_all = sorted(c for c in codes if list(tl_before.get(c) or _NO_TL) != list(tl_after.get(c) or _NO_TL))
+    outside = [c for c in changed_all if c not in uni]
+    changed = [c for c in changed_all if c in uni]
     pinned: dict = {}
     blocked = 0
     added_bars = 0
@@ -1699,7 +1735,7 @@ def _pit_monotone_guard(conn: sqlite3.Connection, tl_before: dict, today=None) -
         gp = _guard_pins(conn)
         for c, segs in pinned.items():
             gp[c] = _merge_segments((gp.get(c) or []) + segs)
-        meta_set({GUARD_PINS_KEY: json.dumps(gp, ensure_ascii=False, sort_keys=True, separators=(",", ":"))}, conn)
+        meta_set({GUARD_PINS_KEY: json.dumps(gp, ensure_ascii=False, sort_keys=True, separators=(",", ":"))}, conn, commit=commit)
         _ST_CACHE.clear()
         tl_after = _st_tables(conn, refresh=True)
     residual: dict = {}
@@ -1710,15 +1746,20 @@ def _pit_monotone_guard(conn: sqlite3.Connection, tl_before: dict, today=None) -
             residual[c] = [[a, b] for a, b in ivs]
             released += flips(c, tl_before.get(c), tl_after.get(c))
     return {"today": today_s, "released_bars": released, "residual": residual, "blocked_bars": blocked,
-            "pinned": pinned, "added_bars": added_bars, "added_codes": added_codes, "changed": len(changed)}
-
+            "pinned": pinned, "added_bars": added_bars, "added_codes": added_codes, "changed": len(changed),
+            "outside_universe": outside}
 
 def _rollback_namechange_refresh(conn: sqlite3.Connection, keys_before: set, pins_raw_before: dict) -> int:
-    """硬断言失败时撤掉本次刷新: 删掉刷新新增的行 (主键不在 keys_before 里的; 刷新只追加, 所以删掉就是原状), 两个钉 meta 恢复
-    原文 (原来没有的键删掉)。-> 删掉的行数。"""
+    """撤掉本次刷新 (硬断言失败, 或 入表 → 重钉 → 守卫 → 写拉取日 任一步抛错; 2026-10-25 卡 UNIVERSE-RULES-4 起这几步是一个未 commit
+    的事务): 先 rollback 整个事务, 再兜底 (连接若在 autocommit 下 rollback 是空操作): 删掉刷新新增的行 (主键不在 keys_before 里的;
+    刷新只追加, 所以删掉就是原状), 两个钉 meta 恢复原文 (原来没有的键删掉)。-> 本次刷新曾新增 (现已撤掉) 的行数。"""
     keys_now = set(conn.execute("SELECT code, start_date, name FROM namechange"))
     added = sorted(keys_now - keys_before)
-    conn.executemany("DELETE FROM namechange WHERE code=? AND start_date=? AND name=?", added)
+    if conn.in_transaction:
+        conn.rollback()
+    still = sorted(set(conn.execute("SELECT code, start_date, name FROM namechange")) - keys_before)
+    if still:
+        conn.executemany("DELETE FROM namechange WHERE code=? AND start_date=? AND name=?", still)
     for k, raw in pins_raw_before.items():
         if raw is None:
             conn.execute("DELETE FROM meta WHERE key=?", (k,))
@@ -1728,12 +1769,13 @@ def _rollback_namechange_refresh(conn: sqlite3.Connection, keys_before: set, pin
     _ST_CACHE.clear()
     return len(added)
 
-
 def _after_universe_refresh(m, conn: sqlite3.Connection, today=None, force: bool = False) -> None:
     """日更收尾 (紧跟 _refresh_universe): ① 钉住当前名剔除起点 (_maintain_curname_pins) ② 到期则月刷改名表
     (_refresh_namechange_if_due: 拉表 -> 只追加 -> 刷后重钉 -> 点时单调守卫 + 硬断言 -> 写拉取日)。force=True 不管到期没到期都拉
     —— DEPLOY「人工强刷」用的就是它, 顺序与自动路径相同「先钉再刷」(2026-10-25 之前 DEPLOY 写的是分开调两个函数、先刷后钉,
-    在没钉过的库上会放行 —— 校验员 C5)。全程非致命: 这里出什么错都只记一行 warning, 行情入库与 meta.max_trade_date 不受影响。"""
+    在没钉过的库上会放行 —— 校验员 C5)。全程非致命: 这里出什么错都只记一行 warning, 行情入库与 meta.max_trade_date 不受影响
+    (月刷的 入表 → 重钉 → 守卫 → 写拉取日 是一个事务, 中途抛错 _refresh_namechange_if_due 已先回滚再抛, 到这里只剩记一行; 失败日
+    最多试 1 次, 同日再进来不再拉 —— 2026-10-25 卡 UNIVERSE-RULES-4)。"""
     try:
         _maintain_curname_pins(conn, today)
         _refresh_namechange_if_due(m, conn, today, force=force)
